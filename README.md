@@ -8,4 +8,4 @@ Work in progress!
 
 -   The fastest way to sync voxels and player positions with WebSockets
 -   Simple handcrafted protocol
--   Just vital dependencies (Tokio, Axum, fastwebSockets)
+-   Just vital dependencies (Tokio, Axum, fastwebsockets)
