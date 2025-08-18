@@ -1,5 +1,5 @@
 use axum::{Router, response::IntoResponse, routing::get};
-use fastwebsockets::{OpCode, WebSocketError, upgrade};
+use fastwebsockets::{Frame, OpCode, WebSocketError, upgrade};
 
 #[tokio::main]
 async fn main() {
@@ -19,13 +19,19 @@ async fn ws_handler(ws: upgrade::IncomingUpgrade) -> impl IntoResponse {
 }
 
 async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
-    let mut ws = fastwebsockets::FragmentCollector::new(fut.await?);
+    let mut inner = fut.await?;
+    inner.set_auto_close(true);
+    inner.set_auto_pong(true);
+    inner.set_writev(true);
+
+    let mut ws = fastwebsockets::FragmentCollector::new(inner);
     loop {
         let frame = ws.read_frame().await?;
         match frame.opcode {
             OpCode::Close => break,
             OpCode::Text | OpCode::Binary => {
-                ws.write_frame(frame).await?;
+                let echo = Frame::new(true, frame.opcode, None, frame.payload);
+                ws.write_frame(echo).await?;
             }
             _ => {}
         }
