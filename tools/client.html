@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>WebSocket Test Client</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+            }
+
+            .container {
+                display: flex;
+                flex-direction: column;
+                gap: 20px;
+            }
+
+            .controls {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+
+            input,
+            button {
+                padding: 8px 12px;
+                font-size: 14px;
+            }
+
+            #messages {
+                border: 1px solid #ccc;
+                height: 300px;
+                overflow-y: auto;
+                padding: 10px;
+                background-color: #f9f9f9;
+                white-space: pre-wrap;
+            }
+
+            .status {
+                padding: 10px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+
+            .connected {
+                background-color: #d4edda;
+                color: #155724;
+            }
+
+            .disconnected {
+                background-color: #f8d7da;
+                color: #721c24;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>WebSocket Test Client</h1>
+
+        <div class="container">
+            <div class="controls">
+                <input
+                    type="text"
+                    id="url"
+                    value="ws://localhost:3000"
+                    placeholder="WebSocket URL"
+                />
+                <button id="connect">Connect</button>
+                <button id="disconnect" disabled>Disconnect</button>
+            </div>
+
+            <div id="status" class="status disconnected">Disconnected</div>
+
+            <div class="controls">
+                <input
+                    type="text"
+                    id="messageInput"
+                    placeholder="Enter message"
+                    disabled
+                />
+                <button id="send" disabled>Send</button>
+                <button id="clear">Clear Messages</button>
+            </div>
+
+            <div id="messages"></div>
+        </div>
+
+        <script>
+            // WebSocket instance and DOM elements
+            let ws = null;
+            const elements = {
+                url: document.getElementById("url"),
+                connectBtn: document.getElementById("connect"),
+                disconnectBtn: document.getElementById("disconnect"),
+                status: document.getElementById("status"),
+                messageInput: document.getElementById("messageInput"),
+                sendBtn: document.getElementById("send"),
+                clearBtn: document.getElementById("clear"),
+                messages: document.getElementById("messages"),
+            };
+
+            // Utility functions
+            function logMessage(message) {
+                const timestamp = new Date().toLocaleTimeString();
+                elements.messages.textContent += `[${timestamp}] ${message}\n`;
+                elements.messages.scrollTop = elements.messages.scrollHeight;
+            }
+
+            function updateConnectionStatus(isConnected) {
+                if (isConnected) {
+                    elements.status.textContent = "Connected";
+                    elements.status.className = "status connected";
+                    elements.connectBtn.disabled = true;
+                    elements.disconnectBtn.disabled = false;
+                    elements.messageInput.disabled = false;
+                    elements.sendBtn.disabled = false;
+                } else {
+                    elements.status.textContent = "Disconnected";
+                    elements.status.className = "status disconnected";
+                    elements.connectBtn.disabled = false;
+                    elements.disconnectBtn.disabled = true;
+                    elements.messageInput.disabled = true;
+                    elements.sendBtn.disabled = true;
+                }
+            }
+
+            // WebSocket event handlers
+            function onWebSocketOpen() {
+                logMessage("Connected to WebSocket server");
+                updateConnectionStatus(true);
+            }
+
+            function onWebSocketMessage(event) {
+                logMessage(`Received: ${event.data}`);
+            }
+
+            function onWebSocketClose(event) {
+                logMessage(`Connection closed: ${event.code} ${event.reason}`);
+                updateConnectionStatus(false);
+            }
+
+            function onWebSocketError(error) {
+                logMessage(`WebSocket error: ${error}`);
+                updateConnectionStatus(false);
+            }
+
+            // Connection management
+            function connectToWebSocket() {
+                try {
+                    ws = new WebSocket(elements.url.value);
+                    ws.onopen = onWebSocketOpen;
+                    ws.onmessage = onWebSocketMessage;
+                    ws.onclose = onWebSocketClose;
+                    ws.onerror = onWebSocketError;
+                } catch (error) {
+                    logMessage(`Failed to connect: ${error.message}`);
+                }
+            }
+
+            function disconnectFromWebSocket() {
+                if (ws) {
+                    ws.close();
+                }
+            }
+
+            function sendMessage() {
+                const message = elements.messageInput.value.trim();
+                if (message && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(message);
+                    logMessage(`Sent: ${message}`);
+                    elements.messageInput.value = "";
+                }
+            }
+
+            function clearMessages() {
+                elements.messages.textContent = "";
+            }
+
+            // Event listeners
+            elements.connectBtn.addEventListener("click", connectToWebSocket);
+            elements.disconnectBtn.addEventListener(
+                "click",
+                disconnectFromWebSocket
+            );
+            elements.sendBtn.addEventListener("click", sendMessage);
+            elements.clearBtn.addEventListener("click", clearMessages);
+
+            elements.messageInput.addEventListener("keypress", (event) => {
+                if (event.key === "Enter") {
+                    sendMessage();
+                }
+            });
+
+            // Initialize application
+            updateConnectionStatus(false);
+        </script>
+    </body>
+</html>
