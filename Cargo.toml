@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.47.1", features = ["full"] }
 axum = { version = "0.8.4", features = ["ws"] }
-fastwebsockets = { version = "0.10.0", features = ["upgrade"] }
+fastwebsockets = { version = "0.10.0", features = ["upgrade", "with_axum"] }

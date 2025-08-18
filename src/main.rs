@@ -4,6 +4,8 @@ use fastwebsockets::{OpCode, WebSocketError, upgrade};
 #[tokio::main]
 async fn main() {
     let app = Router::new().route("/", get(ws_handler));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 async fn ws_handler(ws: upgrade::IncomingUpgrade) -> impl IntoResponse {
