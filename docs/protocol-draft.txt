@@ -1,34 +1,34 @@
-PROTOCOLO BINARIO PARA SINCRONIZACIÓN DE JUGADORES Y VOXELS SOBRE WEBSOCKETS
+BINARY PROTOCOL FOR PLAYER AND VOXEL SYNCHRONIZATION OVER WEBSOCKETS
 
 ══════════════════════════════════════════════════════════════════════════════
 
-PRINCIPIOS DE DISEÑO
+DESIGN PRINCIPLES
 
-• Batching por frame: un frame WS puede contener varios submensajes. Menos syscalls y overhead.
-• Servidor autoritativo + tick: el servidor procesa a tick_rate fijo (ej., 30 Hz) y empaqueta los cambios de ese tick.
-• Interés espacial: el cliente publica su centro de interés y el servidor solo envía entidades/voxels cercanos.
-• Máscaras de componentes: cada actualización declara qué campos cambiaron; no se repiten datos iguales.
-• Cuantización: usa enteros compactos en vez de f32 donde sea razonable (ahorro de ancho de banda y cache).
-• Clases de fiabilidad (lógico):
-  ▸ Crítico (join/leave, cambios de chunk/voxel, snapshots): siempre se envían (TCP ya garantiza).
-  ▸ Ephemeral (posición/orientación alta frecuencia): se colapsan; si una cola al cliente se llena, se descarta lo viejo.
-• LE (little-endian) en todas partes.
-• Sin compresión WS al inicio; si algún payload crece (ej., snapshots de chunk), añade RLE simple casero.
+• Frame batching: one WebSocket frame can contain multiple submessages. Fewer syscalls and overhead.
+• Authoritative server + tick: the server processes at fixed tick_rate (e.g., 30 Hz) and packages the changes from that tick.
+• Spatial interest: the client publishes its center of interest and the server only sends nearby entities/voxels.
+• Component masks: each update declares which fields changed; identical data is not repeated.
+• Quantization: use compact integers instead of f32 where reasonable (bandwidth and cache savings).
+• Reliability classes (logical):
+  ▸ Critical (join/leave, chunk/voxel changes, snapshots): always sent (TCP (Transmission Control Protocol) already guarantees).
+  ▸ Ephemeral (high-frequency position/orientation): collapsed; if a client queue fills up, old data is discarded.
+• LE (little-endian) everywhere.
+• No WebSocket compression initially; if any payload grows (e.g., chunk snapshots), add simple custom RLE (Run-Length Encoding).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-ENCAPSULADO GENERAL
+GENERAL ENCAPSULATION
 
-Cada frame WS del servidor al cliente es:
+Each WebSocket frame from server to client is:
 
 ┌─ FrameHeader ─────────────────────────┐
 │ u8  type = 0x10 (ServerFrame)         │
-│ u32 tick        (monotónico, wrap ok) │
+│ u32 tick        (monotonic, wrap ok)  │
 │ u8  submsg_count                      │
 └───────────────────────────────────────┘
-[SubMsg]*        (submsg_count entradas)
+[SubMsg]*        (submsg_count entries)
 
-Cliente → Servidor:
+Client → Server:
 
 ┌─ ClientFrame ─────────────────────────┐
 │ u8  type = 0x11                       │
@@ -37,33 +37,33 @@ Cliente → Servidor:
 └───────────────────────────────────────┘
 [SubMsg]*
 
-Nota: Puedes enviar múltiples SubMsg en un único frame WS. Si prefieres ultra-simple,
-también puedes mandar submensajes como frames WS independientes: el contenido no cambia.
+Note: You can send multiple SubMsg in a single WebSocket frame. If you prefer ultra-simple,
+you can also send submessages as independent WebSocket frames: the content doesn't change.
 
 ══════════════════════════════════════════════════════════════════════════════
 
-IDENTIFICADORES Y RANGOS
+IDENTIFIERS AND RANGES
 
-• EntityId: u32 (jugadores/NPC/objetos).
-• Chunk coord: mundo voxel particionado en chunks 16×16×16:
-  ▸ i32 cx, cy, cz para chunk absolutos.
-  ▸ Índice local del voxel: u16 v = vx | (vy<<4) | (vz<<8) con vx,vy,vz ∈ [0,15].
-• TextureId/PaletteId: u16 (si te quedas corto, pasa a u24 empaquetado).
+• EntityId: u32 (players/NPC (Non-Player Character)/objects).
+• Chunk coord: voxel world partitioned into 16×16×16 chunks:
+  ▸ i32 cx, cy, cz for absolute chunks.
+  ▸ Local voxel index: u16 v = vx | (vy<<4) | (vz<<8) with vx,vy,vz ∈ [0,15].
+• TextureId/PaletteId: u16 (if you run short, move to packed u24).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-SUBMENSAJES (S ↔ C)
+SUBMESSAGES (S ↔ C)
 
 ┌─ 0x01 HELLO / 0x02 WELCOME ────────────────────────────────────────────────┐
 
-Cliente → Servidor (HELLO 0x01)
+Client → Server (HELLO 0x01)
 ┌─────────────────────────────────┐
 │ u8  0x01                        │
 │ u8  client_protocol_version     │
-│ u32 preferred_updates_hz        │ (sugerido; el server decide)
+│ u32 preferred_updates_hz        │ (suggested; server decides)
 └─────────────────────────────────┘
 
-Servidor → Cliente (WELCOME 0x02)
+Server → Client (WELCOME 0x02)
 ┌─────────────────────────────────┐
 │ u8   0x02                       │
 │ u32  assigned_client_id         │
@@ -74,59 +74,59 @@ Servidor → Cliente (WELCOME 0x02)
 
 ┌─ 0x03 SET_INTEREST ─────────────────────────────────────────────────────────┐
 
-Cliente → Servidor: actualiza su centro de interés para culling.
+Client → Server: updates its center of interest for culling.
 ┌─────────────────────────────────┐
 │ u8   0x03                       │
-│ i32  center_cx, center_cy, cz   │ // coords de chunk
-│ u16  chunk_radius               │ // radio en chunks
+│ i32  center_cx, center_cy, cz   │ // chunk coordinates
+│ u16  chunk_radius               │ // radius in chunks
 └─────────────────────────────────┘
 
 ┌─ 0x04/0x05 JOIN/LEAVE ──────────────────────────────────────────────────────┐
 
-Servidor → Cliente (informativo/broadcast en tu AOI):
+Server → Client (informative/broadcast in your AOI (Area of Interest)):
 
 0x04 JOIN:  u8 0x04, u32 entity_id, u8 kind(0=player,1=npc,...)
 0x05 LEAVE: u8 0x05, u32 entity_id
 
 ══════════════════════════════════════════════════════════════════════════════
 
-ACTUALIZACIONES DE ENTIDADES (JUGADORES/PNJ)
+ENTITY UPDATES (PLAYERS/NPCs)
 
 ┌─ Component mask (bitfield) ─────────────────────────────────────────────────┐
 
-Define qué campos vienen en este submensaje:
+Defines which fields come in this submessage:
 
-bit0: Position     bit1: Orientation     bit2: Velocity      (opcional)
-bit3: StateBits    bit4: AnimState      (si lo separas)      ... (reservado)
+bit0: Position     bit1: Orientation     bit2: Velocity      (optional)
+bit3: StateBits    bit4: AnimState      (if separated)      ... (reserved)
 
-┌─ Cuantización recomendada ──────────────────────────────────────────────────┐
+┌─ Recommended quantization ──────────────────────────────────────────────────┐
 
-• Posición:
-  ▸ Opción A (global simple): s32 en milímetros (pos_mm = round(pos_m * 1000)).
-  ▸ Opción B (más compacta en mundos grandes): posición relativa al chunk →
-    s16 por eje en centímetros (±327.67 m de rango local por eje).
-• Orientación:
-  ▸ Suelo / 3D estándar: yaw u16 (0..65535 ≈ 0..360°), pitch i16 (−90..+90 mapeado), roll opcional i16.
-  ▸ Si solo 2D: solo yaw.
-• Velocity (si sirve para predicción): i16 por eje en cm/s.
-• StateBits: u16 (ej., on_ground=1, crouch=2, jumping=4, stunned=8, etc.).
-• AnimState: u8 (idle/run/jump/attack…), o amplía a u16.
+• Position:
+  ▸ Option A (simple global): s32 in millimeters (pos_mm = round(pos_m * 1000)).
+  ▸ Option B (more compact in large worlds): position relative to chunk →
+    s16 per axis in centimeters (±327.67 m local range per axis).
+• Orientation:
+  ▸ Ground / standard 3D: yaw u16 (0..65535 ≈ 0..360°), pitch i16 (−90..+90 mapped), optional roll i16.
+  ▸ If only 2D: only yaw.
+• Velocity (if useful for prediction): i16 per axis in cm/s.
+• StateBits: u16 (e.g., on_ground=1, crouch=2, jumping=4, stunned=8, etc.).
+• AnimState: u8 (idle/run/jump/attack…), or expand to u16.
 
 ┌─ 0x06 ENTITIES_UPDATE (S → C) ──────────────────────────────────────────────┐
 
-Paquete batched por tick con N entidades (solo las que cambiaron).
+Batched packet per tick with N entities (only those that changed).
 
 ┌─────────────────────────────────┐
 │ u8   0x06                       │
 │ u16  count                      │
 │ repeat count times:             │
-│   u32 entity_id                 │ (delta-coded opcional)
+│   u32 entity_id                 │ (optional delta-coded)
 │   u8  comp_mask                 │
 │                                 │
 │   if comp_mask&1:   // Position │
-│      (modo A) s32 x,y,z         │
-│      (modo B) s16 lx,ly,lz +    │
-│                i32 cx,cy,cz     │ (si cambió de chunk; si no, omitir y marcar "same_chunk")
+│      (mode A) s32 x,y,z         │
+│      (mode B) s16 lx,ly,lz +    │
+│                i32 cx,cy,cz     │ (if chunk changed; if not, omit and mark "same_chunk")
 │   if comp_mask&2:   // Orient   │
 │      u16 yaw; i16 pitch;        │ [i16 roll?]
 │   if comp_mask&4:   // Velocity │
@@ -137,38 +137,38 @@ Paquete batched por tick con N entidades (solo las que cambiaron).
 │      u8 anim                    │
 └─────────────────────────────────┘
 
-Nota: Añade un bit "same_chunk" en comp_mask alto (ej. bit7) para indicar que no envías cx,cy,cz.
-Si cambió de chunk, incluye los 3 i32.
+Note: Add a "same_chunk" bit in high comp_mask (e.g. bit7) to indicate you're not sending cx,cy,cz.
+If chunk changed, include the 3 i32.
 
 ┌─ 0x07 CLIENT_INPUT/POSE (C → S) ────────────────────────────────────────────┐
 
-Si vas a empezar simple: el cliente manda su pose; en futuro, mejor mandar input (teclas) y que el server integre.
+If starting simple: client sends its pose; in future, better to send input (keys) and let server integrate.
 
 ┌─────────────────────────────────┐
 │ u8  0x07                        │
 │ u8  mask                        │ (bit0: pos, bit1: yaw_pitch, bit2: velocity_hint)
-│ if mask&1: (Pos)                │ s16 lx,ly,lz + i32 cx,cy,cz (o s32 xyz global)
+│ if mask&1: (Pos)                │ s16 lx,ly,lz + i32 cx,cy,cz (or s32 xyz global)
 │ if mask&2: (Ori)                │ u16 yaw; i16 pitch
 │ if mask&4: (Vel)                │ i16 vx,vy,vz
 └─────────────────────────────────┘
 
 ══════════════════════════════════════════════════════════════════════════════
 
-MUNDO VOXEL
+VOXEL WORLD
 
-┌─ Chunks y versiones ────────────────────────────────────────────────────────┐
+┌─ Chunks and versions ───────────────────────────────────────────────────────┐
 
-• Cada chunk (cx,cy,cz) mantiene un u32 version.
-• El servidor envía:
-  ▸ Snapshot cuando el cliente entra por primera vez (o si hay desync/hash distinto).
-  ▸ Deltas cuando hay ediciones puntuales.
-• El cliente ackea última versión conocida en 0x0B (opcional para depurar).
+• Each chunk (cx,cy,cz) maintains a u32 version.
+• The server sends:
+  ▸ Snapshot when client enters for the first time (or if there's desync/different hash).
+  ▸ Deltas when there are point edits.
+• The client acks last known version in 0x0B (optional for debugging).
 
-┌─ Representación de voxel ───────────────────────────────────────────────────┐
+┌─ Voxel representation ──────────────────────────────────────────────────────┐
 
-• PaletteId (u16): mapea a color o textura (el cliente tiene una tabla).
+• PaletteId (u16): maps to color or texture (client has a table).
 • VoxelFlags (u8): bit0=destroyed, bit1=modified, bit2=rotated, …
-• Rotación: si aplicable, u8 rot (0..23 para las 24 orientaciones ortogonales; o u16 yaw si necesitas continuo).
+• Rotation: if applicable, u8 rot (0..23 for the 24 orthogonal orientations; or u16 yaw if you need continuous).
 
 ┌─ 0x08 CHUNK_SNAPSHOT (S → C) ───────────────────────────────────────────────┐
 
@@ -178,30 +178,30 @@ MUNDO VOXEL
 │ u32  version                    │
 │ u16  palette_len                │
 │ repeat palette_len:             │
-│   u16 palette_id                │ // (o mapea a índices locales 0..palette_len-1)
+│   u16 palette_id                │ // (or map to local indices 0..palette_len-1)
 │                                 │
 │ u8   encoding                   │ // 0=RAW, 1=RLE, 2=RLE+bitmask
 │ payload...                      │
 └─────────────────────────────────┘
 
-RAW compacto (paleta local):
-• Primero un bitset de ocupación de 4096 voxels (4096 bits = 512 bytes).
-• Luego, para cada voxel ocupado, u16 local_palette_index + [u8 flags] + [u8 rot opcional].
+Compact RAW (local palette):
+• First an occupancy bitset of 4096 voxels (4096 bits = 512 bytes).
+• Then, for each occupied voxel, u16 local_palette_index + [u8 flags] + [optional u8 rot].
 
-RLE simple:
-• Secuencias (run_len u16, kind u16, flags u8 [rot]) sobre un escaneo z-y-x.
-• Sencillo de implementar, muy efectivo en mundos homogéneos.
+Simple RLE:
+• Sequences (run_len u16, kind u16, flags u8 [rot]) over a z-y-x scan.
+• Simple to implement, very effective in homogeneous worlds.
 
-Nota: Empieza con RAW+bitset (muy fácil y rápido). Si duele el ancho de banda, añade el RLE.
+Note: Start with RAW+bitset (very easy and fast). If bandwidth hurts, add RLE.
 
 ┌─ 0x09 CHUNK_DELTA (S → C) ──────────────────────────────────────────────────┐
 
-Para ediciones dispersas:
+For sparse edits:
 
 ┌─────────────────────────────────┐
 │ u8   0x09                       │
 │ i32  cx,cy,cz                   │
-│ u32  base_version               │ // versión que asume el delta
+│ u32  base_version               │ // version the delta assumes
 │ u16  edit_count                 │
 │ repeat edit_count:              │
 │   u16 v_local_index             │ // 0..4095 (vx|vy<<4|vz<<8)
@@ -211,12 +211,12 @@ Para ediciones dispersas:
 │       if (flags & 4 /*rotated*/)│: u8 rot
 └─────────────────────────────────┘
 
-Nota: Si base_version no coincide con el cliente, reenvía snapshot; TCP garantiza orden,
-pero este guardarraíl evita aplicar un delta sobre base desconocida.
+Note: If base_version doesn't match client, resend snapshot; TCP guarantees order,
+but this guard prevents applying a delta over unknown base.
 
 ┌─ 0x0A CLIENT_CHUNK_REQUEST (C → S) ─────────────────────────────────────────┐
 
-Para pedir (re)envío de chunks:
+To request (re)sending of chunks:
 
 ┌─────────────────────────────────┐
 │ u8   0x0A                       │
@@ -225,7 +225,7 @@ Para pedir (re)envío de chunks:
 │   i32 cx,cy,cz                  │
 └─────────────────────────────────┘
 
-┌─ 0x0B CHUNK_ACK (C → S) [opcional] ─────────────────────────────────────────┐
+┌─ 0x0B CHUNK_ACK (C → S) [optional] ─────────────────────────────────────────┐
 
 ┌─────────────────────────────────┐
 │ u8   0x0B                       │
@@ -237,85 +237,85 @@ Para pedir (re)envío de chunks:
 
 ══════════════════════════════════════════════════════════════════════════════
 
-ESTADOS Y ANIMACIONES
+STATES AND ANIMATIONS
 
-• Player StateBits (u16) propuesto:
+• Player StateBits (u16) proposed:
   ▸ bit0 on_ground, bit1 crouch, bit2 jumping, bit3 sprint, bit4 stunned, bit5 noclip, bit6 busy, bit7 reserved…
 • Voxel Flags (u8):
   ▸ bit0 destroyed, bit1 modified (custom data), bit2 rotated, bit3 wet, bit4 hot, …
 
-Nota: Compacta estados booleanos en bitfields. Campos numéricos opcionales (salud, temperatura)
-puedes enviarlos solo cuando cambien (máscara de componentes).
+Note: Pack boolean states into bitfields. Optional numeric fields (health, temperature)
+can be sent only when they change (component masks).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-TAMAÑOS ORIENTATIVOS (3D, cuantizado)
+APPROXIMATE SIZES (3D, quantized)
 
-• Entity update típica (pos+ori):
-  u8 type + u16 count + (u32 id + u8 mask + s16*3 + u16 + i16) = ~1 + 2 + (4 + 1 + 6 + 2 + 2) = ~18 bytes por entidad
-  (vs 1+4+12+8 ≈ 25 con floats).
-• Delta voxel (una edición): 2 + 1 + (2 + [1]) ≈ 5–6 bytes por voxel editado (sin destroyed ≈ +2).
+• Typical entity update (pos+ori):
+  u8 type + u16 count + (u32 id + u8 mask + s16*3 + u16 + i16) = ~1 + 2 + (4 + 1 + 6 + 2 + 2) = ~18 bytes per entity
+  (vs 1+4+12+8 ≈ 25 with floats).
+• Voxel delta (one edit): 2 + 1 + (2 + [1]) ≈ 5–6 bytes per edited voxel (without destroyed ≈ +2).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-FLUJOS TÍPICOS
+TYPICAL FLOWS
 
-1. Conexión: HELLO → WELCOME (id, tick_rate).
-2. Interés: SET_INTEREST (centro + radio).
+1. Connection: HELLO → WELCOME (id, tick_rate).
+2. Interest: SET_INTEREST (center + radius).
 3. Server:
-   ▸ Envía JOIN de entidades en AOI y CHUNK_SNAPSHOT de chunks visibles.
-   ▸ En cada tick, manda ENTITIES_UPDATE con máscara por entidad cambiada y CHUNK_DELTA si hubo ediciones.
-4. Cliente:
-   ▸ Manda CLIENT_INPUT/POSE a 20–60 Hz.
-   ▸ Pide chunks faltantes con CLIENT_CHUNK_REQUEST si detecta huecos.
-   ▸ (Opcional) ACKea versiones de chunk.
+   ▸ Sends JOIN of entities in AOI and CHUNK_SNAPSHOT of visible chunks.
+   ▸ Each tick, sends ENTITIES_UPDATE with mask per changed entity and CHUNK_DELTA if there were edits.
+4. Client:
+   ▸ Sends CLIENT_INPUT/POSE at 20–60 Hz.
+   ▸ Requests missing chunks with CLIENT_CHUNK_REQUEST if gaps detected.
+   ▸ (Optional) ACKs chunk versions.
 
 ══════════════════════════════════════════════════════════════════════════════
 
-DECISIONES DE PERFORMANCE (POR QUÉ ASÍ)
+PERFORMANCE DECISIONS (WHY THIS WAY)
 
-• Máscaras + cuantización: envías solo cambios y en enteros pequeños → menos GC/allocs, menor latencia.
-• Batching por tick: N mensajes → 1 frame WS. Reduce syscalls, headers y lock contention.
-• Índice u16 del voxel: 2 bytes por posición local, cache-friendly, fácil de convertir a (vx,vy,vz) con mascaras y shifts.
-• Versionado de chunk: evita aplicar deltas sobre base equivocada sin necesidad de retransmisión compleja.
-• Interés por chunk: culling natural para voxels; no calculas AOI por-voxel.
+• Masks + quantization: send only changes and in small integers → less GC (Garbage Collection)/allocs, lower latency.
+• Batching per tick: N messages → 1 WebSocket frame. Reduces syscalls, headers and lock contention.
+• u16 voxel index: 2 bytes per local position, cache-friendly, easy to convert to (vx,vy,vz) with masks and shifts.
+• Chunk versioning: prevents applying deltas over wrong base without complex retransmission.
+• Interest per chunk: natural culling for voxels; don't calculate AOI per-voxel.
 
 ══════════════════════════════════════════════════════════════════════════════
 
-IMPLEMENTACIÓN MÍNIMA EN RUST (GUÍA)
+MINIMAL RUST IMPLEMENTATION (GUIDE)
 
-• Define enums SubMsgKind y helpers de lectura/escritura (LE).
-• Usa buffers pre-reservados por frame (Vec::with_capacity).
-• Para ENTITIES_UPDATE:
-  ▸ Ordena por entity_id, opcionalmente delta-code el id (varint casero si quieres: LEB128 en pocas líneas).
-  ▸ Reutiliza un Vec<u8> por tick.
-• Para CHUNK_SNAPSHOT/DELTA:
-  ▸ Mantén HashMap<(cx,cy,cz), Chunk> con version y Vec<Voxel>.
-  ▸ Genera snapshot con bitset + data; añade RLE cuando lo necesites.
+• Define SubMsgKind enums and read/write helpers (LE).
+• Use pre-reserved buffers per frame (Vec::with_capacity).
+• For ENTITIES_UPDATE:
+  ▸ Sort by entity_id, optionally delta-code the id (custom varint if desired: LEB128 in few lines).
+  ▸ Reuse a Vec<u8> per tick.
+• For CHUNK_SNAPSHOT/DELTA:
+  ▸ Maintain HashMap<(cx,cy,cz), Chunk> with version and Vec<Voxel>.
+  ▸ Generate snapshot with bitset + data; add RLE when needed.
 • Backpressure:
-  ▸ Cola mpsc acotada por cliente (ej., 256). Política: drop oldest para mensajes ephemerales; críticos siempre pasan.
-  ▸ Marca submensajes con un byte de clase para poder colapsar fácilmente en la cola
-    (ej., reemplazar ENTITIES_UPDATE anterior por el nuevo del mismo tick).
+  ▸ Bounded mpsc queue per client (e.g., 256). Policy: drop oldest for ephemeral messages; critical always pass.
+  ▸ Mark submessages with a class byte to easily collapse in queue
+    (e.g., replace previous ENTITIES_UPDATE with new one from same tick).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-RUTA DE EVOLUCIÓN (SIN AÑADIR MUCHAS DEPS)
+EVOLUTION PATH (WITHOUT ADDING MANY DEPS)
 
-1. v0: sin varints; usa s16/s32/u16/u32 fijos, máscara de componentes y batching.
-2. v1: añade varint para entity_id delta-coded y edit_count.
-3. v2: RLE para snapshots/deltas de voxels.
-4. v3: compresión de paleta (mapa global → local por chunk).
-5. v4: canal "fiable" y "ephemeral" encolados por separado dentro del mismo frame (solo lógica).
+1. v0: no varints; use fixed s16/s32/u16/u32, component masks and batching.
+2. v1: add varint for delta-coded entity_id and edit_count.
+3. v2: RLE for voxel snapshots/deltas.
+4. v3: palette compression (global → local map per chunk).
+5. v4: "reliable" and "ephemeral" channels queued separately within same frame (logic only).
 
 ══════════════════════════════════════════════════════════════════════════════
 
-CHECK-LIST DE DECISIONES RECOMENDADAS
+RECOMMENDED DECISIONS CHECKLIST
 
 ☐ Chunk size = 16×16×16 (OK).
-☐ Pos cuantizada relativa a chunk: s16 cm + i32 chunk coords.
-☐ Orientación: yaw u16, pitch i16, roll opcional.
-☐ State bits: u16 jugadores; u8 voxels.
-☐ ENTITIES_UPDATE 0x06 con mask y batching por tick.
-☐ CHUNK_SNAPSHOT 0x08 (bitset + datos) y CHUNK_DELTA 0x09 (lista de ediciones).
-☐ SET_INTEREST 0x03 por chunks (centro+radio).
-☐ Colas por cliente acotadas con drop oldest para updates de entidad.
+☐ Quantized pos relative to chunk: s16 cm + i32 chunk coords.
+☐ Orientation: yaw u16, pitch i16, optional roll.
+☐ State bits: u16 players; u8 voxels.
+☐ ENTITIES_UPDATE 0x06 with mask and batching per tick.
+☐ CHUNK_SNAPSHOT 0x08 (bitset + data) and CHUNK_DELTA 0x09 (edit list).
+☐ SET_INTEREST 0x03 per chunks (center+radius).
+☐ Bounded queues per client with drop oldest for entity updates.
