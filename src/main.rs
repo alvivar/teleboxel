@@ -1,8 +1,11 @@
-use axum::{Router, response::IntoResponse, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::Bytes;
-use fastwebsockets::{Frame, OpCode, WebSocketError, upgrade};
+use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocketError, upgrade};
 use std::{collections::HashMap, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+};
 
 enum WorldMsg {
     Connect {
@@ -94,10 +97,13 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn ws_handler(ws: upgrade::IncomingUpgrade) -> impl IntoResponse {
+async fn ws_handler(
+    State(handle): State<WorldHandle>,
+    ws: upgrade::IncomingUpgrade,
+) -> impl IntoResponse {
     let (response, fut) = ws.upgrade().unwrap();
     tokio::task::spawn(async move {
-        if let Err(e) = handle_client(fut).await {
+        if let Err(e) = handle_client(handle, fut).await {
             eprintln!("Error handling client: {}", e);
         }
     });
@@ -105,19 +111,38 @@ async fn ws_handler(ws: upgrade::IncomingUpgrade) -> impl IntoResponse {
     response
 }
 
-async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
+async fn handle_client(
+    handle: WorldHandle,
+    fut: upgrade::UpgradeFut,
+) -> Result<(), WebSocketError> {
+    let (reply_tx, reply_rx) = oneshot::channel::<PlayerRegistration>();
+    handle
+        .tx
+        .send(WorldMsg::Connect { reply: reply_tx })
+        .await
+        .ok();
+    let PlayerRegistration { id, rx } = reply_rx.await.unwrap();
+
     let mut inner = fut.await?;
     inner.set_auto_close(true);
     inner.set_auto_pong(true);
     inner.set_writev(true);
+    let mut ws = FragmentCollector::new(inner);
 
-    let mut ws = fastwebsockets::FragmentCollector::new(inner);
+    loop {
+        !select! {}
+    }
+
     loop {
         let frame = ws.read_frame().await?;
         match frame.opcode {
             OpCode::Close => break,
-            OpCode::Text | OpCode::Binary => {
-                let echo = Frame::new(true, frame.opcode, None, frame.payload);
+            OpCode::Text => {
+                let echo = Frame::new(true, OpCode::Text, None, frame.payload);
+                ws.write_frame(echo).await?;
+            }
+            OpCode::Binary => {
+                let echo = Frame::new(true, OpCode::Binary, None, frame.payload);
                 ws.write_frame(echo).await?;
             }
             _ => {}
