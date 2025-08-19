@@ -1,6 +1,6 @@
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::Bytes;
-use fastwebsockets::{FragmentCollector, Frame, OpCode, WebSocketError, upgrade};
+use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
 use std::{collections::HashMap, time::Duration};
 use tokio::{
     select,
@@ -121,7 +121,7 @@ async fn handle_client(
         .send(WorldMsg::Connect { reply: reply_tx })
         .await
         .ok();
-    let PlayerRegistration { id, rx } = reply_rx.await.unwrap();
+    let PlayerRegistration { id, mut rx } = reply_rx.await.unwrap();
 
     let mut inner = fut.await?;
     inner.set_auto_close(true);
@@ -130,24 +130,43 @@ async fn handle_client(
     let mut ws = FragmentCollector::new(inner);
 
     loop {
-        !select! {}
-    }
+        select! {
+            frame = ws.read_frame() => {
+                if let Ok(frame) = frame {
+                    match frame.opcode {
+                        OpCode::Close => break,
+                        OpCode::Text => {}
+                        OpCode::Binary => {
+                            // Command to the World through the WorldHandle, using the id
+                        }
+                        _ => {}
+                    }
+                }
+            }
 
-    loop {
-        let frame = ws.read_frame().await?;
-        match frame.opcode {
-            OpCode::Close => break,
-            OpCode::Text => {
-                let echo = Frame::new(true, OpCode::Text, None, frame.payload);
-                ws.write_frame(echo).await?;
+            Some(bytes) = rx.recv() => {
+                let payload = Payload::from(bytes.to_vec());
+                let frame = Frame::new(true, OpCode::Binary, None, payload);
+                ws.write_frame(frame).await?;
             }
-            OpCode::Binary => {
-                let echo = Frame::new(true, OpCode::Binary, None, frame.payload);
-                ws.write_frame(echo).await?;
-            }
-            _ => {}
         }
     }
+
+    // loop {
+    //     let frame = ws.read_frame().await?;
+    //     match frame.opcode {
+    //         OpCode::Close => break,
+    //         OpCode::Text => {
+    //             let echo = Frame::new(true, OpCode::Text, None, frame.payload);
+    //             ws.write_frame(echo).await?;
+    //         }
+    //         OpCode::Binary => {
+    //             let echo = Frame::new(true, OpCode::Binary, None, frame.payload);
+    //             ws.write_frame(echo).await?;
+    //         }
+    //         _ => {}
+    //     }
+    // }
 
     Ok(())
 }
