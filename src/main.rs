@@ -1,11 +1,96 @@
 use axum::{Router, response::IntoResponse, routing::get};
+use bytes::Bytes;
 use fastwebsockets::{Frame, OpCode, WebSocketError, upgrade};
+use std::{collections::HashMap, time::Duration};
+use tokio::sync::{mpsc, oneshot};
+
+enum WorldMsg {
+    Connect {
+        reply: oneshot::Sender<PlayerRegistration>,
+    },
+    Disconnect {
+        id: u32,
+    },
+    SetInterest {
+        id: u32,
+        center: (i32, i32, i32),
+        radius: u16,
+    },
+    SetPosition {
+        id: u32,
+        position: (i32, i32, i32),
+    },
+    SetRotation {
+        id: u32,
+        rotation: (i32, i32, i32),
+    },
+}
+
+struct PlayerRegistration {
+    id: u32,
+    rx: mpsc::Receiver<Bytes>,
+}
+
+struct Player {
+    tx: mpsc::Sender<Bytes>,
+    interest: Option<((i32, i32, i32), u16)>,
+}
+
+#[derive(Clone)]
+struct WorldHandle {
+    tx: mpsc::Sender<WorldMsg>,
+}
+
+struct World {
+    next_id: u32,
+    rx: mpsc::Receiver<WorldMsg>,
+    players: HashMap<u32, Player>,
+}
+
+impl World {
+    fn new(rx: mpsc::Receiver<WorldMsg>) -> Self {
+        Self {
+            next_id: 1,
+            rx,
+            players: HashMap::new(),
+        }
+    }
+
+    async fn run(mut self, tick_hz: u32) {
+        let tick = Duration::from_secs_f32(1.0 / tick_hz as f32);
+        let mut ticker = tokio::time::interval(tick);
+
+        loop {
+            while let Ok(msg) = self.rx.try_recv() {
+                // Handle messages from players
+            }
+
+            // Send updates to players
+
+            ticker.tick().await;
+        }
+    }
+
+    async fn handle_msg(&mut self, msg: WorldMsg) {
+        match msg {
+            WorldMsg::Connect { reply } => todo!(),
+            WorldMsg::Disconnect { id } => todo!(),
+            WorldMsg::SetInterest { id, center, radius } => todo!(),
+            WorldMsg::SetPosition { id, position } => todo!(),
+            WorldMsg::SetRotation { id, rotation } => todo!(),
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    let app = Router::new().route("/", get(ws_handler));
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let (tx, rx) = mpsc::channel::<WorldMsg>(1024);
+    let world = World::new(rx);
+    tokio::spawn(world.run(60));
 
+    let handle = WorldHandle { tx };
+    let app = Router::new().route("/", get(ws_handler)).with_state(handle);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
