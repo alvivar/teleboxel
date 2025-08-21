@@ -5,11 +5,12 @@ use std::{collections::HashMap, time::Duration};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
+    time::MissedTickBehavior,
 };
 
 enum WorldMsg {
     Connect {
-        reply: oneshot::Sender<PlayerRegistration>,
+        reply: oneshot::Sender<PlayerHandShake>,
     },
     Disconnect {
         id: u32,
@@ -29,7 +30,7 @@ enum WorldMsg {
     },
 }
 
-struct PlayerRegistration {
+struct PlayerHandShake {
     id: u32,
     rx: mpsc::Receiver<Bytes>,
 }
@@ -45,7 +46,7 @@ struct WorldHandle {
 }
 
 struct World {
-    next_id: u32,
+    id_count: u32,
     rx: mpsc::Receiver<WorldMsg>,
     players: HashMap<u32, Player>,
 }
@@ -53,7 +54,7 @@ struct World {
 impl World {
     fn new(rx: mpsc::Receiver<WorldMsg>) -> Self {
         Self {
-            next_id: 1,
+            id_count: 1,
             rx,
             players: HashMap::new(),
         }
@@ -62,13 +63,16 @@ impl World {
     async fn run(mut self, tick_hz: u32) {
         let tick = Duration::from_secs_f32(1.0 / tick_hz as f32);
         let mut ticker = tokio::time::interval(tick);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             while let Ok(msg) = self.rx.try_recv() {
-                // Handle messages from players
+                self.handle_msg(msg).await;
             }
 
-            // Send updates to players
+            // World update logic
+
+            self.broadcast_tick().await;
 
             ticker.tick().await;
         }
@@ -76,18 +80,38 @@ impl World {
 
     async fn handle_msg(&mut self, msg: WorldMsg) {
         match msg {
-            WorldMsg::Connect { reply } => todo!(),
-            WorldMsg::Disconnect { id } => todo!(),
+            WorldMsg::Connect { reply } => {
+                let id = self.id_count;
+                self.id_count += 1;
+
+                let (tx, rx) = mpsc::channel::<Bytes>(128);
+                self.players.insert(id, Player { tx, interest: None });
+
+                reply.send(PlayerHandShake { id, rx }).ok();
+            }
+            WorldMsg::Disconnect { id } => {
+                self.players.remove(&id);
+            }
             WorldMsg::SetInterest { id, center, radius } => todo!(),
             WorldMsg::SetPosition { id, position } => todo!(),
             WorldMsg::SetRotation { id, rotation } => todo!(),
+        }
+    }
+
+    async fn broadcast_tick(&mut self) {
+        for (id, player) in self.players.iter_mut() {
+            if player.interest.is_none() {
+                continue;
+            }
+
+            // We should filter by area of interest, then send
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<WorldMsg>(1024);
+    let (tx, rx) = mpsc::channel::<WorldMsg>(128);
     let world = World::new(rx);
     tokio::spawn(world.run(60));
 
@@ -115,13 +139,13 @@ async fn handle_client(
     handle: WorldHandle,
     fut: upgrade::UpgradeFut,
 ) -> Result<(), WebSocketError> {
-    let (reply_tx, reply_rx) = oneshot::channel::<PlayerRegistration>();
+    let (reply_tx, reply_rx) = oneshot::channel::<PlayerHandShake>();
     handle
         .tx
         .send(WorldMsg::Connect { reply: reply_tx })
         .await
         .ok();
-    let PlayerRegistration { id, mut rx } = reply_rx.await.unwrap();
+    let PlayerHandShake { id, mut rx } = reply_rx.await.unwrap();
 
     let mut inner = fut.await?;
     inner.set_auto_close(true);
@@ -129,21 +153,33 @@ async fn handle_client(
     inner.set_writev(true);
     let mut ws = FragmentCollector::new(inner);
 
+    let payload = Payload::from(id.to_be_bytes().to_vec());
+    let frame = Frame::new(true, OpCode::Binary, None, payload);
+    ws.write_frame(frame).await?;
+
     loop {
         select! {
             frame = ws.read_frame() => {
                 if let Ok(frame) = frame {
                     match frame.opcode {
                         OpCode::Close => break,
-                        OpCode::Text => {}
+                        OpCode::Text => {
+                            // Maybe we decode the protocol directly here, as
+                            // string, for debugging or lazy interactions?
+                        },
                         OpCode::Binary => {
-                            // Command to the World through the WorldHandle, using the id
+                            // We need to decode the type of message and then
+                            // send it to the WorldHandle
                         }
                         _ => {}
                     }
                 }
+                else {
+                    // Maybe we should log this?
+                    eprintln!("Received unknown frame, not Ok");
+                    break;
+                }
             }
-
             Some(bytes) = rx.recv() => {
                 let payload = Payload::from(bytes.to_vec());
                 let frame = Frame::new(true, OpCode::Binary, None, payload);
@@ -152,21 +188,7 @@ async fn handle_client(
         }
     }
 
-    // loop {
-    //     let frame = ws.read_frame().await?;
-    //     match frame.opcode {
-    //         OpCode::Close => break,
-    //         OpCode::Text => {
-    //             let echo = Frame::new(true, OpCode::Text, None, frame.payload);
-    //             ws.write_frame(echo).await?;
-    //         }
-    //         OpCode::Binary => {
-    //             let echo = Frame::new(true, OpCode::Binary, None, frame.payload);
-    //             ws.write_frame(echo).await?;
-    //         }
-    //         _ => {}
-    //     }
-    // }
+    handle.tx.send(WorldMsg::Disconnect { id }).await.ok();
 
     Ok(())
 }
