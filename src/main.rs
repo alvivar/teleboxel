@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
 use std::{collections::HashMap, time::Duration};
 use tokio::{
@@ -10,7 +10,7 @@ use tokio::{
 
 enum WorldMsg {
     Connect {
-        reply: oneshot::Sender<PlayerHandShake>,
+        reply: oneshot::Sender<PlayerHandshake>,
     },
     Disconnect {
         id: u32,
@@ -20,17 +20,9 @@ enum WorldMsg {
         center: (i32, i32, i32),
         radius: u16,
     },
-    SetPosition {
-        id: u32,
-        position: (i32, i32, i32),
-    },
-    SetRotation {
-        id: u32,
-        rotation: (i32, i32, i32),
-    },
 }
 
-struct PlayerHandShake {
+struct PlayerHandshake {
     id: u32,
     rx: mpsc::Receiver<Bytes>,
 }
@@ -87,14 +79,16 @@ impl World {
                 let (tx, rx) = mpsc::channel::<Bytes>(128);
                 self.players.insert(id, Player { tx, interest: None });
 
-                reply.send(PlayerHandShake { id, rx }).ok();
+                reply.send(PlayerHandshake { id, rx }).ok();
             }
             WorldMsg::Disconnect { id } => {
                 self.players.remove(&id);
             }
-            WorldMsg::SetInterest { id, center, radius } => todo!(),
-            WorldMsg::SetPosition { id, position } => todo!(),
-            WorldMsg::SetRotation { id, rotation } => todo!(),
+            WorldMsg::SetInterest { id, center, radius } => {
+                if let Some(player) = self.players.get_mut(&id) {
+                    player.interest = Some((center, radius));
+                }
+            }
         }
     }
 
@@ -139,13 +133,13 @@ async fn handle_client(
     handle: WorldHandle,
     fut: upgrade::UpgradeFut,
 ) -> Result<(), WebSocketError> {
-    let (reply_tx, reply_rx) = oneshot::channel::<PlayerHandShake>();
+    let (reply_tx, reply_rx) = oneshot::channel::<PlayerHandshake>();
     handle
         .tx
         .send(WorldMsg::Connect { reply: reply_tx })
         .await
         .ok();
-    let PlayerHandShake { id, mut rx } = reply_rx.await.unwrap();
+    let PlayerHandshake { id, mut rx } = reply_rx.await.unwrap();
 
     let mut inner = fut.await?;
     inner.set_auto_close(true);
@@ -153,8 +147,8 @@ async fn handle_client(
     inner.set_writev(true);
     let mut ws = FragmentCollector::new(inner);
 
-    let payload = Payload::from(id.to_be_bytes().to_vec());
-    let frame = Frame::new(true, OpCode::Binary, None, payload);
+    let handshake_id = id.to_string();
+    let frame = Frame::text(Payload::from(handshake_id.as_bytes()));
     ws.write_frame(frame).await?;
 
     loop {
@@ -164,31 +158,58 @@ async fn handle_client(
                     match frame.opcode {
                         OpCode::Close => break,
                         OpCode::Text => {
-                            // Maybe we decode the protocol directly here, as
-                            // string, for debugging or lazy interactions?
-                        },
+                            let parts: Vec<&str> = str::from_utf8(&frame.payload)
+                                .unwrap_or("")
+                                .split(' ')
+                                .collect();
+
+                            // SetInterest Id PosX PosY PosZ Radius
+
+                            if parts[0] == "SetInterest" {
+                                if parts.len() != 6 {
+                                    let payload = Payload::from(b"SetInterest Invalid" as &[u8]);
+                                    ws.write_frame(Frame::text(payload)).await?;
+                                    continue;
+                                }
+
+                                let id = parts[1].parse::<u32>().unwrap();
+                                let center = (
+                                    parts[2].parse::<i32>().unwrap(),
+                                    parts[3].parse::<i32>().unwrap(),
+                                    parts[4].parse::<i32>().unwrap(),
+                                );
+                                let radius = parts[5].parse::<u16>().unwrap();
+
+                                handle
+                                    .tx
+                                    .send(WorldMsg::SetInterest { id, center, radius })
+                                    .await
+                                    .ok();
+
+                                let payload = Payload::from(b"SetInterest Ok" as &[u8]);
+                                ws.write_frame(Frame::text(payload)).await?;
+                            }
+                        }
                         OpCode::Binary => {
-                            // We need to decode the type of message and then
-                            // send it to the WorldHandle
+                            // Eventually, we need to translate the Text
+                            // protocol to binary
                         }
                         _ => {}
                     }
-                }
-                else {
+                } else {
                     // Maybe we should log this?
                     eprintln!("Received unknown frame, not Ok");
                     break;
                 }
             }
             Some(bytes) = rx.recv() => {
-                let payload = Payload::from(bytes.to_vec());
-                let frame = Frame::new(true, OpCode::Binary, None, payload);
-                ws.write_frame(frame).await?;
+                let payload = Payload::Bytes(BytesMut::from(bytes));
+                ws.write_frame(Frame::binary(payload)).await?;
             }
         }
     }
 
-    handle.tx.send(WorldMsg::Disconnect { id }).await.ok();
+    handle.tx.send(WorldMsg::Disconnect { id: id }).await.ok();
 
     Ok(())
 }
