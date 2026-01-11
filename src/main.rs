@@ -209,7 +209,7 @@ async fn handle_client(
         }
     }
 
-    handle.tx.send(WorldMsg::Disconnect { id: id }).await.ok();
+    handle.tx.send(WorldMsg::Disconnect { id }).await.ok();
 
     Ok(())
 }
