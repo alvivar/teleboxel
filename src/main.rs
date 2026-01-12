@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
 use std::{collections::HashMap, time::Duration};
 use tokio::{
@@ -213,7 +213,7 @@ async fn handle_client(
                 }
             }
             Some(bytes) = rx.recv() => {
-                let payload = Payload::Bytes(BytesMut::from(bytes));
+                let payload = Payload::Borrowed(&bytes);
                 ws.write_frame(Frame::binary(payload)).await?;
             }
         }
