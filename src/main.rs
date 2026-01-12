@@ -165,51 +165,53 @@ async fn handle_client(
     loop {
         select! {
             frame = ws.read_frame() => {
-                if let Ok(frame) = frame {
-                    match frame.opcode {
-                        OpCode::Close => break,
-                        OpCode::Text => {
-                            let parts: Vec<&str> = str::from_utf8(&frame.payload)
-                                .unwrap_or("")
-                                .split(' ')
-                                .collect();
-
-                            // SetInterest PosX PosY PosZ Radius
-
-                            if parts[0] == "SetInterest" {
-                                if parts.len() != 5 {
-                                    let payload = Payload::from(b"SetInterest Invalid" as &[u8]);
-                                    ws.write_frame(Frame::text(payload)).await?;
-                                    continue;
-                                }
-
-                                let center = (
-                                    parts[1].parse::<i32>().unwrap(),
-                                    parts[2].parse::<i32>().unwrap(),
-                                    parts[3].parse::<i32>().unwrap(),
-                                );
-                                let radius = parts[4].parse::<u16>().unwrap();
-
-                                handle
-                                    .tx
-                                    .send(WorldMsg::SetInterest { id, center, radius })
-                                    .await
-                                    .ok();
-
-                                let payload = Payload::from(b"SetInterest Ok" as &[u8]);
-                                ws.write_frame(Frame::text(payload)).await?;
-                            }
-                        }
-                        OpCode::Binary => {
-                            // Eventually, we need to translate the Text
-                            // protocol to binary
-                        }
-                        _ => {}
+                let frame = match frame {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("ws read_frame error: {e}");
+                        break;
                     }
-                } else {
-                    // Maybe we should log this?
-                    eprintln!("Received unknown frame, not Ok");
-                    break;
+                };
+
+                match frame.opcode {
+                    OpCode::Close => break,
+                    OpCode::Text => {
+                        let parts: Vec<&str> = str::from_utf8(&frame.payload)
+                            .unwrap_or("")
+                            .split(' ')
+                            .collect();
+
+                        // SetInterest PosX PosY PosZ Radius
+
+                        if parts[0] == "SetInterest" {
+                            if parts.len() != 5 {
+                                let payload = Payload::from(b"SetInterest Invalid" as &[u8]);
+                                ws.write_frame(Frame::text(payload)).await?;
+                                continue;
+                            }
+
+                            let center = (
+                                parts[1].parse::<i32>().unwrap(),
+                                parts[2].parse::<i32>().unwrap(),
+                                parts[3].parse::<i32>().unwrap(),
+                            );
+                            let radius = parts[4].parse::<u16>().unwrap();
+
+                            handle
+                                .tx
+                                .send(WorldMsg::SetInterest { id, center, radius })
+                                .await
+                                .ok();
+
+                            let payload = Payload::from(b"SetInterest Ok" as &[u8]);
+                            ws.write_frame(Frame::text(payload)).await?;
+                        }
+                    }
+                    OpCode::Binary => {
+                        // Eventually, we need to translate the Text
+                        // protocol to binary
+                    }
+                    _ => {}
                 }
             }
             Some(bytes) = rx.recv() => {
