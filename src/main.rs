@@ -1,7 +1,11 @@
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::Bytes;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    io::{Error as IoError, ErrorKind},
+    time::Duration,
+};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -149,8 +153,11 @@ async fn handle_client(
         .tx
         .send(WorldMsg::Connect { reply: reply_tx })
         .await
-        .ok();
-    let PlayerHandshake { id, mut rx } = reply_rx.await.unwrap();
+        .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "world task dead"))?;
+
+    let PlayerHandshake { id, mut rx } = reply_rx
+        .await
+        .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "world task dead"))?;
 
     let mut inner = fut.await?;
     inner.set_auto_close(true);
@@ -197,11 +204,15 @@ async fn handle_client(
                             );
                             let radius = parts[4].parse::<u16>().unwrap();
 
-                            handle
+                            if handle
                                 .tx
                                 .send(WorldMsg::SetInterest { id, center, radius })
                                 .await
-                                .ok();
+                                .is_err()
+                            {
+                                // World task is dead, break the connection
+                                break;
+                            }
 
                             let payload = Payload::from(b"SetInterest Ok" as &[u8]);
                             ws.write_frame(Frame::text(payload)).await?;
