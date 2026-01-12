@@ -192,30 +192,41 @@ async fn handle_client(
 
                         if parts[0] == "SetInterest" {
                             if parts.len() != 5 {
-                                let payload = Payload::from(b"SetInterest Invalid" as &[u8]);
+                                let payload = Payload::from(b"SetInterest Error: Expected 4 parameters (PosX PosY PosZ Radius)" as &[u8]);
                                 ws.write_frame(Frame::text(payload)).await?;
                                 continue;
                             }
 
-                            let center = (
-                                parts[1].parse::<i32>().unwrap(),
-                                parts[2].parse::<i32>().unwrap(),
-                                parts[3].parse::<i32>().unwrap(),
-                            );
-                            let radius = parts[4].parse::<u16>().unwrap();
+                            // Parse coordinates and radius with proper error handling
+                            let parse_result = || -> Result<((i32, i32, i32), u16), &'static str> {
+                                let x = parts[1].parse::<i32>().map_err(|_| "Invalid PosX")?;
+                                let y = parts[2].parse::<i32>().map_err(|_| "Invalid PosY")?;
+                                let z = parts[3].parse::<i32>().map_err(|_| "Invalid PosZ")?;
+                                let radius = parts[4].parse::<u16>().map_err(|_| "Invalid Radius")?;
+                                Ok(((x, y, z), radius))
+                            };
 
-                            if handle
-                                .tx
-                                .send(WorldMsg::SetInterest { id, center, radius })
-                                .await
-                                .is_err()
-                            {
-                                // World task is dead, break the connection
-                                break;
+                            match parse_result() {
+                                Ok((center, radius)) => {
+                                    if handle
+                                        .tx
+                                        .send(WorldMsg::SetInterest { id, center, radius })
+                                        .await
+                                        .is_err()
+                                    {
+                                        // World task is dead, break the connection
+                                        break;
+                                    }
+
+                                    let payload = Payload::from(b"SetInterest Ok" as &[u8]);
+                                    ws.write_frame(Frame::text(payload)).await?;
+                                }
+                                Err(err_msg) => {
+                                    let response = format!("SetInterest Error: {}", err_msg);
+                                    let payload = Payload::from(response.as_bytes());
+                                    ws.write_frame(Frame::text(payload)).await?;
+                                }
                             }
-
-                            let payload = Payload::from(b"SetInterest Ok" as &[u8]);
-                            ws.write_frame(Frame::text(payload)).await?;
                         }
                     }
                     OpCode::Binary => {
