@@ -53,24 +53,35 @@ impl World {
     }
 
     async fn run(mut self, tick_hz: u32) {
-        let tick = Duration::from_secs_f32(1.0 / tick_hz as f32);
+        // Avoid float math + rounding drift
+        let tick = Duration::from_nanos(1_000_000_000u64 / tick_hz as u64);
         let mut ticker = tokio::time::interval(tick);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
-            while let Ok(msg) = self.rx.try_recv() {
-                self.handle_msg(msg).await;
+            select! {
+                // Tick path: drain any queued messages, then update+broadcast once
+                _ = ticker.tick() => {
+                    while let Ok(msg) = self.rx.try_recv() {
+                        self.handle_msg(msg);
+                    }
+
+                    // World update logic
+                    self.broadcast_tick();
+                }
+
+                // Low-latency path: process messages as they arrive
+                Some(msg) = self.rx.recv() => {
+                    self.handle_msg(msg);
+                }
+
+                // Channel closed => shut down world task
+                else => break,
             }
-
-            // World update logic
-
-            self.broadcast_tick().await;
-
-            ticker.tick().await;
         }
     }
 
-    async fn handle_msg(&mut self, msg: WorldMsg) {
+    fn handle_msg(&mut self, msg: WorldMsg) {
         match msg {
             WorldMsg::Connect { reply } => {
                 let id = self.id_count;
@@ -92,7 +103,7 @@ impl World {
         }
     }
 
-    async fn broadcast_tick(&mut self) {
+    fn broadcast_tick(&mut self) {
         for (id, player) in self.players.iter_mut() {
             if player.interest.is_none() {
                 continue;
