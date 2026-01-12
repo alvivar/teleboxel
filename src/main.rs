@@ -174,22 +174,21 @@ async fn handle_client(
                                 .split(' ')
                                 .collect();
 
-                            // SetInterest Id PosX PosY PosZ Radius
+                            // SetInterest PosX PosY PosZ Radius
 
                             if parts[0] == "SetInterest" {
-                                if parts.len() != 6 {
+                                if parts.len() != 5 {
                                     let payload = Payload::from(b"SetInterest Invalid" as &[u8]);
                                     ws.write_frame(Frame::text(payload)).await?;
                                     continue;
                                 }
 
-                                let id = parts[1].parse::<u32>().unwrap();
                                 let center = (
+                                    parts[1].parse::<i32>().unwrap(),
                                     parts[2].parse::<i32>().unwrap(),
                                     parts[3].parse::<i32>().unwrap(),
-                                    parts[4].parse::<i32>().unwrap(),
                                 );
-                                let radius = parts[5].parse::<u16>().unwrap();
+                                let radius = parts[4].parse::<u16>().unwrap();
 
                                 handle
                                     .tx
