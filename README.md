@@ -6,6 +6,6 @@ Work in progress!
 
 ## Goals
 
--   The fastest way to sync voxels and player positions with WebSockets
--   Simple handcrafted protocol
--   Just vital dependencies (Tokio, Axum, fastwebsockets)
+- The fastest way to sync voxels and player positions with WebSockets
+- Simple handcrafted protocol
+- Just vital dependencies (Tokio, Axum, fastwebsockets)
