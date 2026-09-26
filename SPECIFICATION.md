@@ -42,9 +42,7 @@ Non-goals (v0)
   There is no height limit.
 - The world is **sparse**: only chunks that have been edited exist. A missing
   chunk is all air.
-- The server stores a chunk as `[u16; 4096]` (8 KiB) plus a `u32 version`.
-  The version starts at 0 (air) and goes up by 1 at the end of each tick in
-  which the chunk was edited.
+- The server stores a chunk as `[u16; 4096]` (8 KiB).
 
 ### 3.2 Entities
 
@@ -52,7 +50,7 @@ An entity is the generic "thing a client moves that others see". The server
 does not know if it is a player, a car or a cursor.
 
 ```
-Entity { id: u32, owner: client, pos: [i32; 3], data: bytes (≤255), version: u32 }
+Entity { id: u32, pos: [i32; 3], data: bytes (≤255) }
 ```
 
 - The server **interprets only `pos`**. It needs it to decide who is near whom.
@@ -60,7 +58,6 @@ Entity { id: u32, owner: client, pos: [i32; 3], data: bytes (≤255), version: u
   forwarded as is.
 - v0: one entity per connection, owned by that connection. It is created when
   the client first sends `ENTITY_STATE`, and destroyed on disconnect.
-- `version` goes up by 1 for each `ENTITY_STATE` received.
 
 ### 3.3 Clients and views
 
@@ -89,87 +86,74 @@ Each client has a **view**: an axis-aligned box of chunks centered on the chunk
 
 ## 5. Synchronization model
 
-This is the core idea of the server.
+### 5.1 The stream is reliable, or the client is gone
 
-### 5.1 State-based sync
+Every frame the world produces for a client is delivered, in order. There is
+no drop path.
 
-The server keeps, for each client, **what that client currently has**:
+- `try_send(frame)` returns `Ok`: TCP delivers it.
+- It returns `Full`: the client has not taken `OUTBOUND_QUEUE` frames (about a
+  second). It is disconnected.
+- It returns `Closed`: the client is already gone.
 
-- `known_chunks: HashMap<ChunkPos, u32>`: the chunk version the client has.
-  A chunk that is not in the map counts as version 0 (air).
-- `known_entities: HashMap<EntityId, u32>`: the entity version the client has.
+The world task never awaits a client. Because nothing is ever dropped, the
+server only needs to remember **what each client has**, not which version:
 
-On each tick the server compares the truth with the client's view and sends
-the difference. Whatever was not delivered is still a difference on the next
-tick, so nothing is lost and the protocol needs no acks or resend requests.
+- `known_chunks: HashSet<ChunkPos>`
+- `known_entities: HashSet<EntityId>`
+- `pending: Vec<ChunkPos>`: chunks in view the client does not have yet,
+  nearest first.
 
-### 5.2 Commit on enqueue
+### 5.2 What goes in a client's frame
 
-For each client, the tick builds **one frame** plus a list of pending updates
-to that client's known-state.
+Chunks:
 
-- `try_send(frame)` returns `Ok`: apply the pending updates. The frame is
-  queued, and TCP delivers it in order.
-- It returns `Full`: discard the frame and the pending updates. The same
-  difference (updated) is sent on a later tick.
-- It returns `Closed`: the client is gone and gets removed.
-
-The world task never awaits a client. A slow client only falls behind.
-
-### 5.3 What goes in a client's frame
-
-Chunks, for each chunk that exists and is in view, with `k` = known version and
-`v` = current version:
-
-| Condition                                        | Send                              |
-| ------------------------------------------------ | --------------------------------- |
-| `k == v`                                         | nothing                           |
-| `k == v−1`, edited this tick, ≤ 2048 edits       | `CHUNK_EDITS` (this tick's edits) |
-| otherwise                                        | `CHUNK` (snapshot)                |
-
-- The 2048-edit limit keeps `count` inside a `u16` and makes sure a delta is
-  never larger than a snapshot (2048 × 4 B = 8 KiB).
-- A chunk created this tick has `k = 0`, `v = 1`, so it arrives as a small
-  `CHUNK_EDITS`, not as an 8 KiB snapshot.
-- Chunks in `known_chunks` that left the view (with hysteresis) get
-  `CHUNK_UNLOAD`.
-- Snapshots go **nearest first** (squared distance in chunks), at most
-  `MAX_SNAPSHOTS_PER_TICK` per frame, and **only when the client's outbound
-  queue is empty**. The rest waits for later ticks.
+- For each chunk **edited this tick** whose position is in view: if the client
+  has it, `CHUNK_EDITS` with this tick's edits; if not, `CHUNK`, and add it to
+  `known_chunks`. If the edit list has more than 2048 entries, send `CHUNK`
+  instead: that keeps `count` inside a `u16` and a delta never larger than a
+  snapshot.
+- Then, **only when the client's outbound queue is empty**, up to
+  `MAX_SNAPSHOTS_PER_TICK` chunks from the head of `pending` as `CHUNK`, adding
+  each to `known_chunks`.
   *Need:* entering a built area can mean megabytes of snapshots. Without the
   cap, they would all go in one frame. Without the queue check, a slow link
   would fill the queue with snapshots and entity updates would wait behind
-  them; an empty queue means the writer is keeping up. Without the ordering,
-  far chunks could arrive before near ones.
+  them; an empty queue means the writer is keeping up. Nearest first, or far
+  chunks could arrive before near ones.
 
-Entities, for each entity (not the client's own) whose chunk is in view:
+Entities, for each entity except the client's own:
 
-- If it is not known, or its known version differs from the current one:
-  `ENTITY_STATE`.
-- Known entities that left the view (with hysteresis) or were destroyed get
-  `ENTITY_REMOVE`.
+- Not known and in view: `ENTITY_STATE`, add to `known_entities`.
+- Known and changed this tick: `ENTITY_STATE`.
+- Known and outside the hysteresis box: `ENTITY_REMOVE`, remove from
+  `known_entities`.
+- Known and destroyed this tick: `ENTITY_REMOVE`, remove from `known_entities`.
 
 A frame carries at most one message per chunk and one per entity. If there is
 nothing to send, no frame is sent.
 
-### 5.4 Transport boundary
+### 5.3 Transport boundary
 
-The world produces `Bytes` frames and knows nothing about WebSocket. State-based
-sync already tolerates dropped frames, so a future unreliable transport would
-not change the world.
+The world produces `Bytes` frames and knows nothing about WebSocket. It does
+assume an ordered, reliable stream. An unreliable transport would need
+versioned state and a drop path; that is deferred (§13).
 
 ## 6. Tick
 
 Fixed rate `TICK_HZ`. The world task:
 
 1. Drains the inbound queue, applying commands in arrival order:
-   - `ENTITY_STATE`: overwrite pos/data, `version += 1`. Create the entity if
-     needed.
+   - `Join`: add the client.
+   - `Leave`: remove the client; record its entity id as destroyed this tick.
+   - `ENTITY_STATE`: overwrite pos/data (creating the entity if needed) and
+     record the entity as changed this tick.
    - `VOXEL_EDITS`: write the voxels (creating chunks as needed) and append
      `(index, block)` to that chunk's edit list for this tick.
-2. `version += 1` for each edited chunk.
-3. For each client: build the frame (§5.3), `try_send`, commit or discard (§5.2).
-4. Clear the per-tick edit lists.
+2. For each client: build the frame (§5.2), `try_send`, disconnect on `Full`
+   (§5.1).
+3. Clear the per-tick records: chunk edit lists, changed entities, destroyed
+   entities.
 
 Inbound commands are only read at the tick. Nothing is sent between ticks, so
 reading them earlier would only add wakeups.
@@ -181,7 +165,8 @@ Per-client work is bounded by what changed, not by the view size:
 
 - **When the client's center chunk changes**: scan the view box once. Existing
   chunks the client does not have become its `pending` list, sorted by
-  distance. Known chunks outside the hysteresis box get `CHUNK_UNLOAD`.
+  distance. Known chunks outside the hysteresis box get `CHUNK_UNLOAD` and
+  leave `known_chunks`.
 - **Every tick**: the chunks edited this tick, the head of `pending`, and the
   entities. Entities are checked every tick because they move on their own.
 
@@ -239,7 +224,6 @@ Notes
   clients will see for this client's entity.
 - `CHUNK_UNLOAD` means "forget this chunk" (treat it as air). It is only sent
   for chunks the client has.
-- Versions never go over the wire. The server alone decides snapshot vs delta.
 
 ## 8. Connection lifecycle
 
@@ -254,7 +238,7 @@ Notes
 5. On close, error or protocol error: send `Leave { id }` to the world, which
    removes the client and its entity. Structure the reader as an inner
    function that returns `Result`, and send `Leave` after it, whatever it
-   returned. No drop guard is needed.
+   returned.
 
 Rules
 
@@ -265,14 +249,14 @@ Rules
 
 ## 9. Constants (v0 defaults)
 
-| Name              | Value                  | Why                                              |
-| ----------------- | ---------------------- | ------------------------------------------------ |
-| `TICK_HZ`         | 30                     | Standard rate; clients interpolate               |
-| `MAX_VIEW_H`      | 16 chunks              | Bounds per-client tick cost                      |
-| `MAX_VIEW_V`      | 8 chunks               | Same                                             |
-| `MAX_SNAPSHOTS_PER_TICK` | 8 per client    | 64 KiB max per frame; ≈ 2 MiB/s at 30 Hz         |
-| `OUTBOUND_QUEUE`  | 4 frames               | Small queue = low latency; state sync covers drops |
-| `INBOUND_QUEUE`   | 1024 commands          | Shared connection → world queue                  |
+| Name                     | Value         | Why                                        |
+| ------------------------ | ------------- | ------------------------------------------ |
+| `TICK_HZ`                | 30            | Standard rate; clients interpolate         |
+| `MAX_VIEW_H`             | 16 chunks     | Bounds per-client tick cost                |
+| `MAX_VIEW_V`             | 8 chunks      | Same                                       |
+| `MAX_SNAPSHOTS_PER_TICK` | 8 per client  | 64 KiB max per frame; ≈ 2 MiB/s at 30 Hz   |
+| `OUTBOUND_QUEUE`         | 32 frames     | ≈ 1 s of stall before a client is dropped  |
+| `INBOUND_QUEUE`          | 1024 commands | Shared connection → world queue            |
 
 `PROTOCOL_VERSION` = 1.
 
@@ -286,9 +270,10 @@ Rules
 World state:
 
 ```
-World  { clients: HashMap<u32, Client>, chunks: HashMap<ChunkPos, Chunk>, tick: u32 }
+World  { clients: HashMap<u32, Client>, chunks: HashMap<ChunkPos, Chunk>, tick: u32,
+         edited: Vec<ChunkPos>, changed: Vec<u32>, destroyed: Vec<u32> }
 Client { tx, view_h, view_v, entity: Option<Entity>, known_chunks, known_entities, pending }
-Chunk  { blocks: [u16; 4096], version: u32, edits: Vec<(u16, u16)> }
+Chunk  { blocks: [u16; 4096], edits: Vec<(u16, u16)> }
 ```
 
 In v0 a client and its entity are one record: the entity id is the client id.
@@ -303,10 +288,12 @@ Targets at 50 clients:
 
 - Tick work ≤ 1 ms.
 - The world task never awaits a client.
-- Latency added by the server ≤ 1 tick.
+
+By construction, the server adds at most one tick of latency: a command
+arrives, and its effect is in the next frame.
 
 Built-in stats, printed every few seconds: tick time avg/max, bytes out,
-frames sent/dropped, clients, entities, chunks.
+clients, entities, chunks.
 
 Where the cost is expected to be: entity traffic is small (≈ 50 × ~50 B per
 tick). Chunk traffic dominates (8 KiB per snapshot). Optimization effort goes to
@@ -326,7 +313,7 @@ Each step is small and leaves the server runnable.
 2. **Connection**: split reader/writer, `HELLO`/`WELCOME`, `Join`/`Leave`,
    close on protocol error. Remove the text protocol.
 3. **Entities**: inbound `ENTITY_STATE`, views, outbound
-   `ENTITY_STATE`/`ENTITY_REMOVE` with commit-on-enqueue.
+   `ENTITY_STATE`/`ENTITY_REMOVE`.
 4. **Chunks**: sparse storage, `VOXEL_EDITS`, `CHUNK`/`CHUNK_EDITS`/`CHUNK_UNLOAD`,
    `pending` list and snapshot cap.
 5. **Measurement**: tick stats (§11).
@@ -342,12 +329,13 @@ Optimization experiments, in the expected order of payoff:
 
 1. Compact chunk encodings: UNIFORM (single-block chunk), RLE, a palette with
    bit-packing.
-2. Sharing encoded snapshots between clients (`Bytes` cache per chunk version).
+2. Sharing encoded snapshots between clients (`Bytes` cache per chunk).
 3. Zero-allocation frame building (reused `BytesMut` split/freeze).
-4. A faster transport (WebTransport/UDP).
 
 Features:
 
+- Tolerating dropped frames (versioned state per client), which is what an
+  unreliable transport (WebTransport/UDP) would need.
 - `PING`/`PONG` for client-side RTT.
 - Several entities per client, entities owned by the server.
 - Input-based authority, prediction and reconciliation.
