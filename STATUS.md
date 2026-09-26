@@ -1,28 +1,37 @@
 # Status
 
+v0 is complete. `SPECIFICATION.md` is the source of truth; this file only says
+where things stand.
+
 ## What we have
 
-- Working WebSocket server using Axum + fastwebsockets.
-- `World` task with fixed tick loop and player registry.
-- Connect / Disconnect handling via `WorldMsg`.
-- Text-based `SetInterest` command (temporary).
-- Per-player outbound `Bytes` channel and zero-copy send path.
-- Protocol draft documented in `docs/protocol-draft.txt`.
+- `src/protocol.rs`: binary wire format (§7). Decodes client messages with
+  explicit errors, encodes server messages.
+- `src/main.rs`: WebSocket connection lifecycle (§8): split reader/writer,
+  `HELLO`, `Join`/`Leave`, close 1002 on malformed input, teardown even when a
+  client stops reading.
+- `src/world.rs`: the 30 Hz world tick (§5, §6): entity and sparse chunk
+  replication with view hysteresis, reliable-or-disconnect outbound queues,
+  and stats every 5 s (§11).
+- `src/bin/bot.rs`: load tool that simulates N clients.
+- `tools/client.html`: 2D debug client. It shows only what the server sent.
 
-## Where we are
+## Measured
 
-- Prototype stage: network plumbing exists, but binary protocol is not
-  implemented.
-- World tick does not yet broadcast any real state.
-- Client path is still text based and only sets interest.
+Tick work averages 0.5–0.8 ms with 50 bots, which meets the target in §11.
+Details are in §11.1.
 
-## What we need (next)
+## How to run
 
-- Implement binary protocol encode/decode module.
-- Replace text handshake with `HELLO` / `WELCOME`.
-- Parse binary `SET_INTEREST` and store per-client AOI.
-- Build entity model + per-tick `ENTITIES_UPDATE`.
-- Add chunk storage, snapshots, and deltas.
-- Add client input/pose handling.
-- Add backpressure logic for outbound queues.
-- Build or update debug client for end-to-end tests.
+```
+cargo run --release                                     # server on :3000
+cargo run --release --bin bot -- 50 127.0.0.1:3000 60   # 50 bots for 60 s
+```
+
+Open `tools/client.html` in a browser and press Connect. If `localhost` does
+not connect, use `ws://127.0.0.1:3000`.
+
+## Next
+
+Nothing is scheduled. Candidates, only if a measurement or a feature asks for
+them, are listed in §13.

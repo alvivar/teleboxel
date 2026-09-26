@@ -248,6 +248,9 @@ Notes
    at once. The world sends `WELCOME` at its next tick (§6), so every server
    frame, the first included, carries a real tick. The connection never
    encodes server messages.
+   If the counter is exhausted, the connection is closed with code 1011
+   ("entity ids exhausted") before `Join`, and the failure is logged. Ids are
+   never reused, not even then.
 4. Active: a reader parses and validates messages and forwards commands to
    the world. A writer forwards the world's frames to the socket.
 5. On close, error or protocol error: send `Leave { id }` to the world, which
@@ -308,7 +311,8 @@ Dependencies stay: `tokio`, `axum`, `fastwebsockets`, `bytes`.
 
 Targets at 50 clients:
 
-- Tick work ≤ 1 ms.
+- Tick work ≤ 1 ms **on average**. Single ticks may take longer; the hard limit
+  is the tick period (33 ms), past which ticks are skipped.
 - The world task never awaits a client.
 
 By construction, the server adds at most one tick of latency: a command
@@ -321,9 +325,27 @@ Where the cost is expected to be: entity traffic is small (≈ 50 × ~50 B per
 tick). Chunk traffic dominates (8 KiB per snapshot). Optimization effort goes to
 chunks first.
 
+### 11.1 v0 measurement
+
+50 bots (`bot 50 127.0.0.1:3000 40`: view 8/4, 2 edits/s each) against the
+release server, both on one machine (i7-13700H, Windows 11, loopback):
+
+| Measure                  | Result                                             |
+| ------------------------ | -------------------------------------------------- |
+| Tick work, average       | 0.5–0.8 ms: **target met**                         |
+| Tick work, worst per 5 s | 2–4 ms steady, ~10 ms while all clients join       |
+| Never awaits a client    | **met**: 0 disconnects, one frame per bot per tick |
+| Bytes out                | 1.2–4.8 MiB/s, dominated by initial snapshots      |
+
+The worst-case ticks are accepted for v0: they stay far below the 33 ms tick
+period. Bots and server shared the CPU, which may inflate them. If they ever
+matter, measure first with the bots on other cores and per tick phase, then
+pick an optimization from §13.
+
 ## 12. Implementation steps
 
-Each step is small and leaves the server runnable.
+Each step is small and leaves the server runnable. All of them are done in v0
+(see `STATUS.md`).
 
 1. **Protocol**: `protocol.rs`. The server only decodes client→server messages
    and only encodes server→client messages.
