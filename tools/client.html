@@ -2,218 +2,282 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>WebSocket Test Client</title>
+        <title>Teleboxel test client</title>
         <style>
             body {
-                font-family: Arial, sans-serif;
-                max-width: 800px;
+                font-family: sans-serif;
+                max-width: 760px;
                 margin: 0 auto;
-                padding: 20px;
-                background-color: #1e1e1e;
+                padding: 16px;
+                background: #1e1e1e;
                 color: #e0e0e0;
             }
-
-            .container {
-                display: flex;
-                flex-direction: column;
-                gap: 20px;
+            fieldset {
+                border: 1px solid #444;
+                margin: 0 0 12px;
             }
-
-            .controls {
-                display: flex;
-                gap: 10px;
-                align-items: center;
-            }
-
             input,
             button {
-                padding: 8px 12px;
-                font-size: 14px;
-                background-color: #2d2d2d;
+                padding: 4px 8px;
+                background: #2d2d2d;
                 color: #e0e0e0;
+                border: 1px solid #555;
+            }
+            input[type="number"] {
+                width: 80px;
+            }
+            #counts {
+                font-family: monospace;
+                font-size: 16px;
+            }
+            #log {
                 border: 1px solid #444;
-                border-radius: 4px;
-            }
-
-            button {
-                cursor: pointer;
-            }
-
-            button:hover:not(:disabled) {
-                background-color: #3d3d3d;
-            }
-
-            button:disabled {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-
-            #messages {
-                border: 1px solid #444;
-                height: 300px;
+                height: 240px;
                 overflow-y: auto;
-                padding: 10px;
-                background-color: #252525;
+                padding: 8px;
+                background: #252525;
+                font-family: monospace;
                 white-space: pre-wrap;
-            }
-
-            .status {
-                padding: 10px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-
-            .connected {
-                background-color: #1a4d2e;
-                color: #4ade80;
-            }
-
-            .disconnected {
-                background-color: #4d1a1a;
-                color: #f87171;
             }
         </style>
     </head>
     <body>
-        <h1>WebSocket Test Client</h1>
+        <h1>Teleboxel test client</h1>
 
-        <div class="container">
-            <div class="controls">
-                <input
-                    type="text"
-                    id="url"
-                    value="ws://localhost:3000"
-                    placeholder="WebSocket URL"
-                />
-                <button id="connect">Connect</button>
-                <button id="disconnect" disabled>Disconnect</button>
-            </div>
+        <fieldset>
+            <legend>Connection</legend>
+            <input id="url" value="ws://localhost:3000" size="24" />
+            view_h <input id="viewH" type="number" value="4" min="0" max="255" />
+            view_v <input id="viewV" type="number" value="2" min="0" max="255" />
+            <button id="connect">Connect</button>
+            <button id="disconnect">Disconnect</button>
+        </fieldset>
 
-            <div id="status" class="status disconnected">Disconnected</div>
+        <fieldset>
+            <legend>Entity position (voxels)</legend>
+            x <input id="posX" type="number" value="0" step="any" />
+            y <input id="posY" type="number" value="0" step="any" />
+            z <input id="posZ" type="number" value="0" step="any" />
+            <button id="move">Send position</button>
+        </fieldset>
 
-            <div class="controls">
-                <input
-                    type="text"
-                    id="messageInput"
-                    placeholder="Enter message"
-                    disabled
-                />
-                <button id="send" disabled>Send</button>
-                <button id="clear">Clear Messages</button>
-            </div>
+        <fieldset>
+            <legend>Voxel edit</legend>
+            x <input id="voxX" type="number" value="0" />
+            y <input id="voxY" type="number" value="0" />
+            z <input id="voxZ" type="number" value="0" />
+            block <input id="block" type="number" value="1" min="0" max="65535" />
+            <button id="edit">Edit voxel</button>
+        </fieldset>
 
-            <div id="messages"></div>
-        </div>
+        <div id="counts"></div>
+        <h3>Log</h3>
+        <div id="log"></div>
 
         <script>
-            // WebSocket instance and DOM elements
+            // Wire format: SPECIFICATION.md §7. Little-endian, no per-message length.
+            const PROTOCOL_VERSION = 1;
+            const $ = (id) => document.getElementById(id);
+
             let ws = null;
-            const elements = {
-                url: document.getElementById("url"),
-                connectBtn: document.getElementById("connect"),
-                disconnectBtn: document.getElementById("disconnect"),
-                status: document.getElementById("status"),
-                messageInput: document.getElementById("messageInput"),
-                sendBtn: document.getElementById("send"),
-                clearBtn: document.getElementById("clear"),
-                messages: document.getElementById("messages"),
-            };
+            let state = null;
 
-            // Utility functions
-            function logMessage(message) {
-                const timestamp = new Date().toLocaleTimeString();
-                elements.messages.textContent += `[${timestamp}] ${message}\n`;
-                elements.messages.scrollTop = elements.messages.scrollHeight;
+            function newState() {
+                return {
+                    id: null,
+                    tick: null,
+                    entities: new Map(), // id -> { pos: [x, y, z], data: Uint8Array }
+                    chunks: new Map(), // "cx,cy,cz" -> Uint16Array(4096), index order (§4)
+                    bytes: 0,
+                };
             }
 
-            function updateConnectionStatus(isConnected) {
-                if (isConnected) {
-                    elements.status.textContent = "Connected";
-                    elements.status.className = "status connected";
-                    elements.connectBtn.disabled = true;
-                    elements.disconnectBtn.disabled = false;
-                    elements.messageInput.disabled = false;
-                    elements.sendBtn.disabled = false;
-                } else {
-                    elements.status.textContent = "Disconnected";
-                    elements.status.className = "status disconnected";
-                    elements.connectBtn.disabled = false;
-                    elements.disconnectBtn.disabled = true;
-                    elements.messageInput.disabled = true;
-                    elements.sendBtn.disabled = true;
+            function log(text) {
+                $("log").textContent += `[${new Date().toLocaleTimeString()}] ${text}\n`;
+                $("log").scrollTop = $("log").scrollHeight;
+            }
+
+            function showCounts() {
+                const s = state ?? newState();
+                $("counts").textContent =
+                    `id ${s.id ?? "-"} | tick ${s.tick ?? "-"} | entities ${s.entities.size}` +
+                    ` | chunks ${s.chunks.size} | bytes received ${s.bytes}`;
+            }
+
+            /** Reads an integer input, failing loudly instead of wrapping. */
+            function intInput(id, min, max) {
+                const value = $(id).valueAsNumber; // NaN when empty or invalid
+                if (!Number.isInteger(value) || value < min || value > max) {
+                    throw new Error(`${id} must be an integer in [${min}, ${max}]`);
+                }
+                return value;
+            }
+
+            function send(bytes) {
+                if (ws?.readyState !== WebSocket.OPEN) throw new Error("not connected");
+                ws.send(bytes);
+            }
+
+            // Client → server (§7.2)
+
+            function hello() {
+                const buf = new DataView(new ArrayBuffer(5));
+                buf.setUint8(0, 0x01);
+                buf.setUint16(1, PROTOCOL_VERSION, true);
+                buf.setUint8(3, intInput("viewH", 0, 255));
+                buf.setUint8(4, intInput("viewV", 0, 255));
+                return buf.buffer;
+            }
+
+            function entityState() {
+                const buf = new DataView(new ArrayBuffer(14));
+                buf.setUint8(0, 0x02);
+                ["posX", "posY", "posZ"].forEach((id, i) => {
+                    // 24.8 fixed point: ±2^23 voxels (§4).
+                    const fixed = Math.round($(id).valueAsNumber * 256);
+                    if (!Number.isInteger(fixed) || fixed < -(2 ** 31) || fixed > 2 ** 31 - 1) {
+                        throw new Error(`${id} out of range`);
+                    }
+                    buf.setInt32(1 + 4 * i, fixed, true);
+                });
+                buf.setUint8(13, 0); // no data
+                return buf.buffer;
+            }
+
+            function voxelEdits() {
+                const buf = new DataView(new ArrayBuffer(17));
+                buf.setUint8(0, 0x03);
+                buf.setUint16(1, 1, true);
+                ["voxX", "voxY", "voxZ"].forEach((id, i) => {
+                    buf.setInt32(3 + 4 * i, intInput(id, -(2 ** 31), 2 ** 31 - 1), true);
+                });
+                buf.setUint16(15, intInput("block", 0, 65535), true);
+                return buf.buffer;
+            }
+
+            // Server → client (§7.3). Throws on anything unexpected.
+
+            function applyFrame(buffer) {
+                const view = new DataView(buffer);
+                let o = 0;
+                // Returns the current offset and advances past `size` bytes.
+                // Reading past the end throws a RangeError (truncated frame).
+                const take = (size) => (o += size) - size;
+                const u8 = () => view.getUint8(take(1));
+                const u16 = () => view.getUint16(take(2), true);
+                const u32 = () => view.getUint32(take(4), true);
+                const i32 = () => view.getInt32(take(4), true);
+                const pos = () => [i32(), i32(), i32()];
+                const chunk = (key) => {
+                    const blocks = state.chunks.get(key);
+                    if (!blocks) throw new Error(`chunk ${key} is not known`);
+                    return blocks;
+                };
+
+                state.tick = u32();
+                while (o < buffer.byteLength) {
+                    const type = u8();
+                    switch (type) {
+                        case 0x81: // WELCOME
+                            state.id = u32();
+                            log(`WELCOME: entity ${state.id}, ${u8()} Hz`);
+                            break;
+                        case 0x82: {
+                            // ENTITY_STATE
+                            const id = u32();
+                            const p = pos();
+                            const len = u8();
+                            if (o + len > buffer.byteLength) throw new Error("truncated ENTITY_STATE");
+                            state.entities.set(id, { pos: p, data: new Uint8Array(buffer, o, len) });
+                            o += len;
+                            break;
+                        }
+                        case 0x83: {
+                            // ENTITY_REMOVE
+                            const id = u32();
+                            if (!state.entities.delete(id)) throw new Error(`entity ${id} is not known`);
+                            break;
+                        }
+                        case 0x84: {
+                            // CHUNK
+                            const key = pos().join(",");
+                            const blocks = new Uint16Array(4096);
+                            for (let i = 0; i < 4096; i++) blocks[i] = u16();
+                            state.chunks.set(key, blocks);
+                            break;
+                        }
+                        case 0x85: {
+                            // CHUNK_EDITS
+                            const blocks = chunk(pos().join(","));
+                            for (let n = u16(); n > 0; n--) {
+                                const index = u16();
+                                // Typed arrays ignore out-of-range writes silently.
+                                if (index >= blocks.length) throw new Error(`chunk index ${index} out of range`);
+                                blocks[index] = u16();
+                            }
+                            break;
+                        }
+                        case 0x86: {
+                            // CHUNK_UNLOAD
+                            const key = pos().join(",");
+                            chunk(key);
+                            state.chunks.delete(key);
+                            break;
+                        }
+                        default:
+                            throw new Error(`unknown message type 0x${type.toString(16)}`);
+                    }
                 }
             }
 
-            // WebSocket event handlers
-            function onWebSocketOpen() {
-                logMessage("Connected to WebSocket server");
-                updateConnectionStatus(true);
-            }
-
-            function onWebSocketMessage(event) {
-                logMessage(`Received: ${event.data}`);
-            }
-
-            function onWebSocketClose(event) {
-                logMessage(`Connection closed: ${event.code} ${event.reason}`);
-                updateConnectionStatus(false);
-            }
-
-            function onWebSocketError(error) {
-                logMessage(`WebSocket error: ${error}`);
-                updateConnectionStatus(false);
-            }
-
-            // Connection management
-            function connectToWebSocket() {
+            function onMessage(event) {
                 try {
-                    ws = new WebSocket(elements.url.value);
-                    ws.onopen = onWebSocketOpen;
-                    ws.onmessage = onWebSocketMessage;
-                    ws.onclose = onWebSocketClose;
-                    ws.onerror = onWebSocketError;
-                } catch (error) {
-                    logMessage(`Failed to connect: ${error.message}`);
-                }
-            }
-
-            function disconnectFromWebSocket() {
-                if (ws) {
+                    if (typeof event.data === "string") throw new Error("text message");
+                    state.bytes += event.data.byteLength;
+                    applyFrame(event.data);
+                } catch (e) {
+                    // Without per-message lengths the rest of the stream cannot be trusted.
+                    log(`protocol error: ${e.message}; disconnecting`);
+                    ws.onmessage = null;
                     ws.close();
                 }
+                showCounts();
             }
 
-            function sendMessage() {
-                const message = elements.messageInput.value.trim();
-                if (message && ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(message);
-                    logMessage(`Sent: ${message}`);
-                    elements.messageInput.value = "";
+            // UI
+
+            function run(action) {
+                try {
+                    action();
+                } catch (e) {
+                    log(`error: ${e.message}`);
                 }
             }
 
-            function clearMessages() {
-                elements.messages.textContent = "";
-            }
+            $("connect").onclick = () =>
+                run(() => {
+                    if (ws) throw new Error("already connected");
+                    const first = hello();
+                    state = newState();
+                    ws = new WebSocket($("url").value);
+                    ws.binaryType = "arraybuffer";
+                    ws.onopen = () => {
+                        log("connected, sending HELLO");
+                        ws.send(first);
+                    };
+                    ws.onmessage = onMessage;
+                    ws.onclose = (e) => {
+                        log(`closed: code ${e.code}${e.reason ? `, reason "${e.reason}"` : ""}`);
+                        ws = null;
+                    };
+                    ws.onerror = () => log("WebSocket error (see the close code)");
+                    showCounts();
+                });
+            $("disconnect").onclick = () => run(() => ws?.close(1000));
+            $("move").onclick = () => run(() => send(entityState()));
+            $("edit").onclick = () => run(() => send(voxelEdits()));
 
-            // Event listeners
-            elements.connectBtn.addEventListener("click", connectToWebSocket);
-            elements.disconnectBtn.addEventListener(
-                "click",
-                disconnectFromWebSocket,
-            );
-            elements.sendBtn.addEventListener("click", sendMessage);
-            elements.clearBtn.addEventListener("click", clearMessages);
-
-            elements.messageInput.addEventListener("keypress", (event) => {
-                if (event.key === "Enter") {
-                    sendMessage();
-                }
-            });
-
-            // Initialize application
-            updateConnectionStatus(false);
+            showCounts();
         </script>
     </body>
 </html>
