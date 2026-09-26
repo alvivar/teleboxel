@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "io-util"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
-fastwebsockets = { version = "0.10.0", features = ["upgrade", "with_axum"] }
+fastwebsockets = { version = "0.10.0", features = ["upgrade", "with_axum", "unstable-split"] }
 bytes = "1.12.1"

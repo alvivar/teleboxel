@@ -1,251 +1,196 @@
 mod protocol;
+mod world;
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::Bytes;
-use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
-use std::{
-    collections::HashMap,
-    io::{Error as IoError, ErrorKind},
-    time::Duration,
+use fastwebsockets::{
+    FragmentCollectorRead, Frame, OpCode, Payload, WebSocketError, WebSocketWrite, upgrade,
 };
 use tokio::{
-    select,
-    sync::{mpsc, oneshot},
-    time::MissedTickBehavior,
+    io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf},
+    sync::{Mutex, mpsc},
 };
 
-enum WorldMsg {
-    Connect {
-        reply: oneshot::Sender<PlayerHandshake>,
-    },
-    Disconnect {
-        id: u32,
-    },
-    SetInterest {
-        id: u32,
-        center: (i32, i32, i32),
-        radius: u16,
-    },
-}
+use protocol::{Hello, ProtocolError};
+use world::{Command, World};
 
-struct PlayerHandshake {
-    id: u32,
-    rx: mpsc::Receiver<Bytes>,
-}
+type Reader<S> = FragmentCollectorRead<ReadHalf<S>>;
+type Writer<S> = Arc<Mutex<WebSocketWrite<WriteHalf<S>>>>;
 
-struct Player {
-    tx: mpsc::Sender<Bytes>,
-    interest: Option<((i32, i32, i32), u16)>,
-}
+const WORLD_STOPPED: &str = "world task stopped";
 
-#[derive(Clone)]
-struct WorldHandle {
-    tx: mpsc::Sender<WorldMsg>,
-}
-
-struct World {
-    id_count: u32,
-    rx: mpsc::Receiver<WorldMsg>,
-    players: HashMap<u32, Player>,
-}
-
-impl World {
-    fn new(rx: mpsc::Receiver<WorldMsg>) -> Self {
-        Self {
-            id_count: 1,
-            rx,
-            players: HashMap::new(),
-        }
-    }
-
-    async fn run(mut self, tick_hz: u32) {
-        // Avoid float math + rounding drift
-        let tick = Duration::from_nanos(1_000_000_000u64 / tick_hz as u64);
-        let mut ticker = tokio::time::interval(tick);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        loop {
-            select! {
-                // Tick path: drain any queued messages, then update+broadcast once
-                _ = ticker.tick() => {
-                    while let Ok(msg) = self.rx.try_recv() {
-                        self.handle_msg(msg);
-                    }
-
-                    // World update logic
-                    self.broadcast_tick();
-                }
-
-                // Low-latency path: process messages as they arrive
-                Some(msg) = self.rx.recv() => {
-                    self.handle_msg(msg);
-                }
-
-                // Channel closed => shut down world task
-                else => break,
-            }
-        }
-    }
-
-    fn handle_msg(&mut self, msg: WorldMsg) {
-        match msg {
-            WorldMsg::Connect { reply } => {
-                let id = self.id_count;
-                self.id_count += 1;
-
-                let (tx, rx) = mpsc::channel::<Bytes>(128);
-                self.players.insert(id, Player { tx, interest: None });
-
-                reply.send(PlayerHandshake { id, rx }).ok();
-            }
-            WorldMsg::Disconnect { id } => {
-                self.players.remove(&id);
-            }
-            WorldMsg::SetInterest { id, center, radius } => {
-                if let Some(player) = self.players.get_mut(&id) {
-                    player.interest = Some((center, radius));
-                }
-            }
-        }
-    }
-
-    fn broadcast_tick(&mut self) {
-        for (id, player) in self.players.iter_mut() {
-            if player.interest.is_none() {
-                continue;
-            }
-
-            // We should filter by area of interest, then send
-        }
-    }
-}
+/// Entity ids, never reused while the server runs (§8).
+static NEXT_ID: AtomicU32 = AtomicU32::new(0);
 
 #[tokio::main]
 async fn main() {
-    let (tx, rx) = mpsc::channel::<WorldMsg>(128);
-    let world = World::new(rx);
-    tokio::spawn(world.run(60));
+    let (world_tx, world_rx) = mpsc::channel(world::INBOUND_QUEUE);
+    tokio::spawn(World::new(world_rx).run());
 
-    let handle = WorldHandle { tx };
-    let app = Router::new().route("/", get(ws_handler)).with_state(handle);
+    let app = Router::new()
+        .route("/", get(ws_handler))
+        .with_state(world_tx);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
 async fn ws_handler(
-    State(handle): State<WorldHandle>,
+    State(world): State<mpsc::Sender<Command>>,
     ws: upgrade::IncomingUpgrade,
 ) -> impl IntoResponse {
-    let (response, fut) = ws.upgrade().unwrap();
-    tokio::task::spawn(async move {
-        if let Err(e) = handle_client(handle, fut).await {
-            eprintln!("Error handling client: {}", e);
-        }
-    });
-
+    let (response, fut) = ws
+        .upgrade()
+        .expect("fastwebsockets always builds the response");
+    tokio::spawn(handle_client(world, fut));
     response
 }
 
-async fn handle_client(
-    handle: WorldHandle,
-    fut: upgrade::UpgradeFut,
-) -> Result<(), WebSocketError> {
-    let (reply_tx, reply_rx) = oneshot::channel::<PlayerHandshake>();
-    handle
-        .tx
-        .send(WorldMsg::Connect { reply: reply_tx })
+enum ConnectionError {
+    Protocol(ProtocolError),
+    WebSocket(WebSocketError),
+}
+
+impl From<ProtocolError> for ConnectionError {
+    fn from(e: ProtocolError) -> Self {
+        Self::Protocol(e)
+    }
+}
+
+impl From<WebSocketError> for ConnectionError {
+    fn from(e: WebSocketError) -> Self {
+        Self::WebSocket(e)
+    }
+}
+
+async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
+    let ws = match fut.await {
+        Ok(ws) => ws,
+        Err(e) => return eprintln!("upgrade failed: {e}"),
+    };
+    // `read_frame` is not cancel-safe, so reading and writing are separate
+    // halves instead of a `select!` (§8).
+    let (read, write) = ws.split(tokio::io::split);
+    let mut read = FragmentCollectorRead::new(read);
+    let write = Arc::new(Mutex::new(write));
+
+    let Hello { view_h, view_v } = match read_hello(&mut read, &write).await {
+        Ok(Some(hello)) => hello,
+        Ok(None) => return,
+        Err(e) => return close_on_error(e, &write).await,
+    };
+
+    let Ok(id) = NEXT_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    else {
+        eprintln!("entity ids exhausted");
+        return close(&write, 1011, "entity ids exhausted").await;
+    };
+    let (tx, rx) = mpsc::channel(world::OUTBOUND_QUEUE);
+    world
+        .send(Command::Join {
+            id,
+            tx,
+            view_h,
+            view_v,
+        })
         .await
-        .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "world task dead"))?;
+        .expect(WORLD_STOPPED);
+    tokio::spawn(write_frames(rx, write.clone()));
 
-    let PlayerHandshake { id, mut rx } = reply_rx
+    let result = read_messages(id, &mut read, &write, &world).await;
+    world
+        .send(Command::Leave { id })
         .await
-        .map_err(|_| IoError::new(ErrorKind::BrokenPipe, "world task dead"))?;
+        .expect(WORLD_STOPPED);
+    if let Err(e) = result {
+        close_on_error(e, &write).await;
+    }
+}
 
-    let mut inner = fut.await?;
-    inner.set_auto_close(true);
-    inner.set_auto_pong(true);
-    inner.set_writev(true);
-    let mut ws = FragmentCollector::new(inner);
+/// Reads the first message. `None` means the client closed before sending it.
+async fn read_hello<S: AsyncRead + AsyncWrite>(
+    read: &mut Reader<S>,
+    write: &Writer<S>,
+) -> Result<Option<Hello>, ConnectionError> {
+    match next_message(read, write).await? {
+        Some(payload) => Ok(Some(protocol::decode_hello(&payload)?)),
+        None => Ok(None),
+    }
+}
 
-    let handshake_id = id.to_string();
-    let frame = Frame::text(Payload::from(handshake_id.as_bytes()));
-    ws.write_frame(frame).await?;
-
-    loop {
-        select! {
-            frame = ws.read_frame() => {
-                let frame = match frame {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("ws read_frame error: {e}");
-                        break;
-                    }
-                };
-
-                match frame.opcode {
-                    OpCode::Close => break,
-                    OpCode::Text => {
-                        let parts: Vec<&str> = str::from_utf8(&frame.payload)
-                            .unwrap_or("")
-                            .split(' ')
-                            .collect();
-
-                        // SetInterest PosX PosY PosZ Radius
-
-                        if parts[0] == "SetInterest" {
-                            if parts.len() != 5 {
-                                let payload = Payload::from(b"SetInterest Error: Expected 4 parameters (PosX PosY PosZ Radius)" as &[u8]);
-                                ws.write_frame(Frame::text(payload)).await?;
-                                continue;
-                            }
-
-                            // Parse coordinates and radius with proper error handling
-                            let parse_result = || -> Result<((i32, i32, i32), u16), &'static str> {
-                                let x = parts[1].parse::<i32>().map_err(|_| "Invalid PosX")?;
-                                let y = parts[2].parse::<i32>().map_err(|_| "Invalid PosY")?;
-                                let z = parts[3].parse::<i32>().map_err(|_| "Invalid PosZ")?;
-                                let radius = parts[4].parse::<u16>().map_err(|_| "Invalid Radius")?;
-                                Ok(((x, y, z), radius))
-                            };
-
-                            match parse_result() {
-                                Ok((center, radius)) => {
-                                    if handle
-                                        .tx
-                                        .send(WorldMsg::SetInterest { id, center, radius })
-                                        .await
-                                        .is_err()
-                                    {
-                                        // World task is dead, break the connection
-                                        break;
-                                    }
-
-                                    let payload = Payload::from(b"SetInterest Ok" as &[u8]);
-                                    ws.write_frame(Frame::text(payload)).await?;
-                                }
-                                Err(err_msg) => {
-                                    let response = format!("SetInterest Error: {}", err_msg);
-                                    let payload = Payload::from(response.as_bytes());
-                                    ws.write_frame(Frame::text(payload)).await?;
-                                }
-                            }
-                        }
-                    }
-                    OpCode::Binary => {
-                        // Eventually, we need to translate the Text
-                        // protocol to binary
-                    }
-                    _ => {}
-                }
-            }
-            Some(bytes) = rx.recv() => {
-                let payload = Payload::Borrowed(&bytes);
-                ws.write_frame(Frame::binary(payload)).await?;
-            }
+async fn read_messages<S: AsyncRead + AsyncWrite>(
+    id: u32,
+    read: &mut Reader<S>,
+    write: &Writer<S>,
+    world: &mpsc::Sender<Command>,
+) -> Result<(), ConnectionError> {
+    while let Some(payload) = next_message(read, write).await? {
+        for message in protocol::decode_messages(&payload)? {
+            world
+                .send(Command::Message { id, message })
+                .await
+                .expect(WORLD_STOPPED);
         }
     }
-
-    handle.tx.send(WorldMsg::Disconnect { id }).await.ok();
-
     Ok(())
+}
+
+/// The payload of the next binary message, or `None` once the client closes.
+async fn next_message<S: AsyncRead + AsyncWrite>(
+    read: &mut Reader<S>,
+    write: &Writer<S>,
+) -> Result<Option<Payload<'static>>, ConnectionError> {
+    loop {
+        // Pongs and close replies go through the writer.
+        let frame = read
+            .read_frame(&mut |frame| async move { write.lock().await.write_frame(frame).await })
+            .await?;
+        match frame.opcode {
+            OpCode::Binary => return Ok(Some(frame.payload)),
+            OpCode::Text => return Err(ProtocolError("text messages are not supported").into()),
+            OpCode::Close => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
+async fn write_frames<S: AsyncWrite>(mut rx: mpsc::Receiver<Bytes>, write: Writer<S>) {
+    while let Some(frame) = rx.recv().await {
+        let frame = Frame::binary(Payload::Borrowed(&frame));
+        if let Err(e) = write.lock().await.write_frame(frame).await {
+            return eprintln!("write failed: {e}");
+        }
+    }
+}
+
+/// Closes with 1002 on malformed input (§7.1), ours or the WebSocket layer's.
+/// Other errors already broke the connection.
+async fn close_on_error<S: AsyncWrite>(error: ConnectionError, write: &Writer<S>) {
+    match error {
+        ConnectionError::Protocol(ProtocolError(reason)) => close(write, 1002, reason).await,
+        ConnectionError::WebSocket(
+            e @ (WebSocketError::InvalidFragment
+            | WebSocketError::InvalidUTF8
+            | WebSocketError::InvalidContinuationFrame
+            | WebSocketError::InvalidCloseFrame
+            | WebSocketError::ReservedBitsNotZero
+            | WebSocketError::ControlFrameFragmented
+            | WebSocketError::PingFrameTooLarge
+            | WebSocketError::FrameTooLarge
+            | WebSocketError::InvalidValue),
+        ) => close(write, 1002, &e.to_string()).await,
+        // Includes `InvalidCloseCode`, which fastwebsockets already answered with 1002.
+        ConnectionError::WebSocket(e) => eprintln!("connection failed: {e}"),
+    }
+}
+
+async fn close<S: AsyncWrite>(write: &Writer<S>, code: u16, reason: &str) {
+    let frame = Frame::close(code, reason.as_bytes());
+    if let Err(e) = write.lock().await.write_frame(frame).await {
+        eprintln!("close failed: {e}");
+    }
 }

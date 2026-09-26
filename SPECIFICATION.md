@@ -144,7 +144,8 @@ versioned state and a drop path; that is deferred (§13).
 Fixed rate `TICK_HZ`. The world task:
 
 1. Drains the inbound queue, applying commands in arrival order:
-   - `Join`: add the client.
+   - `Join`: add the client and send it a frame with `WELCOME`. Its queue is
+     new, so this send cannot be `Full`.
    - `Leave`: remove the client; record its entity id as destroyed this tick.
    - `ENTITY_STATE`: overwrite pos/data (creating the entity if needed) and
      record the entity as changed this tick.
@@ -230,9 +231,11 @@ Notes
 1. WebSocket upgrade.
 2. Read `HELLO` and validate it (§7.2).
 3. Allocate `entity_id` from a process-wide atomic counter (never reused while
-   the server runs). Send `WELCOME`. Send `Join { id, tx }` to the world.
-   Nothing waits for the world: the id is known locally, and the world learns
-   about the client at its next tick.
+   the server runs). Send `Join { id, tx, view_h, view_v }` to the world.
+   Nothing waits for the world: the id is known locally, and the reader starts
+   at once. The world sends `WELCOME` at its next tick (§6), so every server
+   frame, the first included, carries a real tick. The connection never
+   encodes server messages.
 4. Active: a reader parses and validates messages and forwards commands to
    the world. A writer forwards the world's frames to the socket.
 5. On close, error or protocol error: send `Leave { id }` to the world, which
