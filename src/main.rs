@@ -1,3 +1,5 @@
+mod protocol;
+
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use bytes::Bytes;
 use fastwebsockets::{FragmentCollector, Frame, OpCode, Payload, WebSocketError, upgrade};
