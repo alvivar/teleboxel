@@ -3,7 +3,8 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
-    time::Duration,
+    mem,
+    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -23,6 +24,7 @@ pub const INBOUND_QUEUE: usize = 1024;
 const MAX_SNAPSHOTS_PER_TICK: usize = 8;
 /// Above this, a snapshot is sent instead of the edits (§5.2).
 const MAX_CHUNK_EDITS: usize = 2048;
+const STATS_PERIOD: Duration = Duration::from_secs(5);
 
 type ChunkPos = [i32; 3];
 
@@ -67,6 +69,15 @@ struct Entity {
     data: Vec<u8>,
 }
 
+/// Accumulated over one `STATS_PERIOD` (§11).
+#[derive(Default)]
+struct Stats {
+    ticks: u32,
+    work: Duration,
+    max_work: Duration,
+    bytes_out: usize,
+}
+
 struct Chunk {
     blocks: [u16; 4096],
     /// `(index, block)` edits of this tick.
@@ -81,6 +92,7 @@ pub struct World {
     edited: Vec<ChunkPos>,
     changed: HashSet<u32>,
     destroyed: Vec<u32>,
+    stats: Stats,
 }
 
 impl World {
@@ -93,16 +105,43 @@ impl World {
             edited: Vec::new(),
             changed: HashSet::new(),
             destroyed: Vec::new(),
+            stats: Stats::default(),
         }
     }
 
     pub async fn run(mut self) {
         let mut ticker = time::interval(Duration::from_secs(1) / u32::from(TICK_HZ));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut period_start = Instant::now();
         loop {
             ticker.tick().await;
+            let start = Instant::now();
             self.step();
+            let work = start.elapsed();
+            self.stats.ticks += 1;
+            self.stats.work += work;
+            self.stats.max_work = self.stats.max_work.max(work);
+
+            let period = period_start.elapsed();
+            if period >= STATS_PERIOD {
+                self.print_stats(period);
+                period_start = Instant::now();
+            }
         }
+    }
+
+    fn print_stats(&mut self, period: Duration) {
+        let stats = mem::take(&mut self.stats);
+        let entities = self.clients.values().filter(|c| c.entity.is_some()).count();
+        println!(
+            "tick avg {:.2?} max {:.2?} | out {:.1} KiB/s | clients {} entities {} chunks {}",
+            stats.work / stats.ticks,
+            stats.max_work,
+            stats.bytes_out as f64 / 1024.0 / period.as_secs_f64(),
+            self.clients.len(),
+            entities,
+            self.chunks.len(),
+        );
     }
 
     fn step(&mut self) {
@@ -137,7 +176,10 @@ impl World {
                 protocol::put_welcome(&mut frame, id, TICK_HZ);
                 // A new queue cannot be full. If it is closed, the connection
                 // already ended and its `Leave` follows.
-                if tx.try_send(frame.freeze()).is_ok() {
+                let frame = frame.freeze();
+                let len = frame.len();
+                if tx.try_send(frame).is_ok() {
+                    self.stats.bytes_out += len;
                     let client = Client {
                         tx,
                         _disconnect: disconnect,
@@ -230,8 +272,9 @@ impl World {
                 continue;
             }
 
+            let len = frame.len();
             match client.tx.try_send(frame.freeze()) {
-                Ok(()) => {}
+                Ok(()) => self.stats.bytes_out += len,
                 Err(TrySendError::Full(_)) => {
                     eprintln!("client {id}: outbound queue full, disconnecting");
                     disconnected.push(id);
