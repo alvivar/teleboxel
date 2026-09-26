@@ -109,14 +109,20 @@ server only needs to remember **what each client has**, not which version:
 
 Chunks:
 
-- For each chunk **edited this tick** whose position is in view: if the client
-  has it, `CHUNK_EDITS` with this tick's edits; if not, `CHUNK`, and add it to
-  `known_chunks`. If the edit list has more than 2048 entries, send `CHUNK`
-  instead: that keeps `count` inside a `u16` and a delta never larger than a
-  snapshot.
+- For each chunk **edited this tick**:
+  - the client has it: `CHUNK_EDITS` with this tick's edits, wherever the chunk
+    is. A known chunk can sit in the hysteresis ring, outside the view; if it
+    got no edits there, the client's copy would stay stale when it came back
+    into view, because a known chunk is never resent.
+  - the client does not have it and it is in view: `CHUNK`, and add it to
+    `known_chunks`.
+  - If the edit list has more than 2048 entries, send `CHUNK` instead of
+    `CHUNK_EDITS`: that keeps `count` inside a `u16` and a delta never larger
+    than a snapshot.
 - Then, **only when the client's outbound queue is empty**, up to
   `MAX_SNAPSHOTS_PER_TICK` chunks from the head of `pending` as `CHUNK`, adding
-  each to `known_chunks`.
+  each to `known_chunks`. Entries the client already got through an edit are
+  skipped, not sent twice.
   *Need:* entering a built area can mean megabytes of snapshots. Without the
   cap, they would all go in one frame. Without the queue check, a slow link
   would fill the queue with snapshots and entity updates would wait behind
@@ -285,7 +291,8 @@ World state:
 ```
 World  { clients: HashMap<u32, Client>, chunks: HashMap<ChunkPos, Chunk>, tick: u32,
          edited: Vec<ChunkPos>, changed: HashSet<u32>, destroyed: Vec<u32> }
-Client { tx, disconnect, view_h, view_v, entity: Option<Entity>, known_chunks, known_entities, pending }
+Client { tx, disconnect, view_h, view_v, entity: Option<Entity>, view_center: Option<ChunkPos>,
+         known_chunks, known_entities, pending }
 Chunk  { blocks: [u16; 4096], edits: Vec<(u16, u16)> }
 ```
 
