@@ -13,7 +13,8 @@ use fastwebsockets::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf},
-    sync::{Mutex, mpsc},
+    select,
+    sync::{Mutex, mpsc, oneshot},
 };
 
 use protocol::{Hello, ProtocolError};
@@ -90,25 +91,43 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
         return close(&write, 1011, "entity ids exhausted").await;
     };
     let (tx, rx) = mpsc::channel(world::OUTBOUND_QUEUE);
+    let (disconnect, mut disconnected) = oneshot::channel();
     world
         .send(Command::Join {
             id,
             tx,
+            disconnect,
             view_h,
             view_v,
         })
         .await
         .expect(WORLD_STOPPED);
-    tokio::spawn(write_frames(rx, write.clone()));
+    let writer = tokio::spawn(write_frames(rx, write.clone()));
 
-    let result = read_messages(id, &mut read, &write, &world).await;
+    // `disconnected` resolves when the world forgets this client: one tick
+    // after `Leave`, or when it disconnects a slow client (§5.1). That bounds
+    // the teardown even when a client that stopped reading keeps the writer,
+    // and with it the pongs and the close, blocked. The reader is abandoned
+    // for good, so cancelling `read_frame` here is safe.
+    let result = select! {
+        result = read_messages(id, &mut read, &write, &world) => result,
+        _ = &mut disconnected => Ok(()),
+    };
     world
         .send(Command::Leave { id })
         .await
         .expect(WORLD_STOPPED);
     if let Err(e) = result {
-        close_on_error(e, &write).await;
+        // `biased`: the world may already have forgotten the client, but a
+        // writable close must still be attempted first.
+        select! {
+            biased;
+            () = close_on_error(e, &write) => {}
+            _ = &mut disconnected => {}
+        }
     }
+    // Dropping the last handles of both halves closes the socket.
+    writer.abort();
 }
 
 /// Reads the first message. `None` means the client closed before sending it.
@@ -161,8 +180,11 @@ async fn next_message<S: AsyncRead + AsyncWrite>(
 async fn write_frames<S: AsyncWrite>(mut rx: mpsc::Receiver<Bytes>, write: Writer<S>) {
     while let Some(frame) = rx.recv().await {
         let frame = Frame::binary(Payload::Borrowed(&frame));
-        if let Err(e) = write.lock().await.write_frame(frame).await {
-            return eprintln!("write failed: {e}");
+        match write.lock().await.write_frame(frame).await {
+            Ok(()) => {}
+            // A close frame was already written: the connection is ending.
+            Err(WebSocketError::ConnectionClosed) => return,
+            Err(e) => return eprintln!("write failed: {e}"),
         }
     }
 }

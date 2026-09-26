@@ -94,7 +94,8 @@ no drop path.
 - `try_send(frame)` returns `Ok`: TCP delivers it.
 - It returns `Full`: the client has not taken `OUTBOUND_QUEUE` frames (about a
   second). It is disconnected.
-- It returns `Closed`: the client is already gone.
+- It returns `Closed`: the connection already ended. It is removed the same
+  way.
 
 The world task never awaits a client. Because nothing is ever dropped, the
 server only needs to remember **what each client has**, not which version:
@@ -144,8 +145,10 @@ versioned state and a drop path; that is deferred (§13).
 Fixed rate `TICK_HZ`. The world task:
 
 1. Drains the inbound queue, applying commands in arrival order:
-   - `Join`: add the client and send it a frame with `WELCOME`. Its queue is
-     new, so this send cannot be `Full`.
+   - `Join`: send the client a frame with `WELCOME` and add it. If the send
+     returns `Closed`, the connection already ended and its `Leave` follows,
+     so the client is not added. The queue is new, so this send cannot be
+     `Full`.
    - `Leave`: remove the client; record its entity id as destroyed this tick.
    - `ENTITY_STATE`: overwrite pos/data (creating the entity if needed) and
      record the entity as changed this tick.
@@ -231,7 +234,8 @@ Notes
 1. WebSocket upgrade.
 2. Read `HELLO` and validate it (§7.2).
 3. Allocate `entity_id` from a process-wide atomic counter (never reused while
-   the server runs). Send `Join { id, tx, view_h, view_v }` to the world.
+   the server runs). Send `Join { id, tx, disconnect, view_h, view_v }` to the
+   world.
    Nothing waits for the world: the id is known locally, and the reader starts
    at once. The world sends `WELCOME` at its next tick (§6), so every server
    frame, the first included, carries a real tick. The connection never
@@ -242,12 +246,18 @@ Notes
    removes the client and its entity. Structure the reader as an inner
    function that returns `Result`, and send `Leave` after it, whatever it
    returned.
+6. When the world removes a client (`Leave`, `Full`, `Closed`), it drops the
+   client's `disconnect` sender (a `oneshot`). The connection waits for it next
+   to the reader and next to the final close. *Need:* a client that stops
+   reading blocks the writer mid-write, and with it the write half; only a
+   signal from the world can end that connection.
 
 Rules
 
 - Reader and writer are separate tasks, or halves of a split socket.
   *Need:* `fastwebsockets::read_frame` is not cancel-safe, so it cannot sit in a
-  `select!` next to the outbound channel.
+  `select!` next to the outbound channel. Cancelling it once, when the
+  connection ends and never reads again, is fine.
 - Malformed input never panics.
 
 ## 9. Constants (v0 defaults)
@@ -274,8 +284,8 @@ World state:
 
 ```
 World  { clients: HashMap<u32, Client>, chunks: HashMap<ChunkPos, Chunk>, tick: u32,
-         edited: Vec<ChunkPos>, changed: Vec<u32>, destroyed: Vec<u32> }
-Client { tx, view_h, view_v, entity: Option<Entity>, known_chunks, known_entities, pending }
+         edited: Vec<ChunkPos>, changed: HashSet<u32>, destroyed: Vec<u32> }
+Client { tx, disconnect, view_h, view_v, entity: Option<Entity>, known_chunks, known_entities, pending }
 Chunk  { blocks: [u16; 4096], edits: Vec<(u16, u16)> }
 ```
 
