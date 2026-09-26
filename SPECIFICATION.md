@@ -213,9 +213,11 @@ A WebSocket **binary message** is the unit of transport.
 - `HELLO` must be the whole first client message.
 - A version mismatch, `view_h > MAX_VIEW_H` or `view_v > MAX_VIEW_V` is a
   protocol error. *Need:* the view radius bounds the per-client tick cost.
-- The client applies its own edits optimistically. The server re-sends them to
-  everyone, including the author. The server's order is final: when two edits
-  hit the same voxel, the one the server applied last wins.
+- The server re-sends every edit to everyone in range, including the author.
+  The server's order is final: when two edits hit the same voxel, the one the
+  server applied last wins. A client may apply its own edits optimistically;
+  the echo then corrects it. The debug client (`tools/client.html`) does not:
+  it shows only what the server sent.
 
 ### 7.3 Server → client
 

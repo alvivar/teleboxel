@@ -2,19 +2,34 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <title>Teleboxel test client</title>
+        <title>Teleboxel client</title>
         <style>
             body {
+                display: flex;
+                height: 100vh;
+                margin: 0;
                 font-family: sans-serif;
-                max-width: 760px;
-                margin: 0 auto;
-                padding: 16px;
                 background: #1e1e1e;
                 color: #e0e0e0;
             }
+            canvas {
+                display: block;
+                flex: 1;
+                min-width: 0;
+                height: 100vh;
+                cursor: crosshair;
+            }
+            aside {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                width: 360px;
+                padding: 8px;
+                box-sizing: border-box;
+            }
             fieldset {
                 border: 1px solid #444;
-                margin: 0 0 12px;
+                margin: 0;
             }
             input,
             button {
@@ -24,84 +39,118 @@
                 border: 1px solid #555;
             }
             input[type="number"] {
-                width: 80px;
+                width: 48px;
             }
-            #counts {
-                font-family: monospace;
-                font-size: 16px;
-            }
+            #hud,
             #log {
-                border: 1px solid #444;
-                height: 240px;
-                overflow-y: auto;
-                padding: 8px;
-                background: #252525;
+                margin: 0;
                 font-family: monospace;
                 white-space: pre-wrap;
+            }
+            #swatch {
+                display: inline-block;
+                width: 12px;
+                height: 12px;
+                border: 1px solid #fff;
+            }
+            #log {
+                flex: 1;
+                overflow-y: auto;
+                padding: 8px;
+                border: 1px solid #444;
+                background: #252525;
             }
         </style>
     </head>
     <body>
-        <h1>Teleboxel test client</h1>
-
-        <fieldset>
-            <legend>Connection</legend>
-            <input id="url" value="ws://localhost:3000" size="24" />
-            view_h <input id="viewH" type="number" value="4" min="0" max="255" />
-            view_v <input id="viewV" type="number" value="2" min="0" max="255" />
-            <button id="connect">Connect</button>
-            <button id="disconnect">Disconnect</button>
-        </fieldset>
-
-        <fieldset>
-            <legend>Entity position (voxels)</legend>
-            x <input id="posX" type="number" value="0" step="any" />
-            y <input id="posY" type="number" value="0" step="any" />
-            z <input id="posZ" type="number" value="0" step="any" />
-            <button id="move">Send position</button>
-        </fieldset>
-
-        <fieldset>
-            <legend>Voxel edit</legend>
-            x <input id="voxX" type="number" value="0" />
-            y <input id="voxY" type="number" value="0" />
-            z <input id="voxZ" type="number" value="0" />
-            block <input id="block" type="number" value="1" min="0" max="65535" />
-            <button id="edit">Edit voxel</button>
-        </fieldset>
-
-        <div id="counts"></div>
-        <h3>Log</h3>
-        <div id="log"></div>
+        <canvas id="world"></canvas>
+        <aside>
+            <fieldset>
+                <legend>Connection</legend>
+                <input id="url" value="ws://localhost:3000" size="28" />
+                <p>
+                    view_h <input id="viewH" type="number" value="2" min="0" max="255" />
+                    view_v <input id="viewV" type="number" value="1" min="0" max="255" />
+                    <button id="connect">Connect</button>
+                    <button id="disconnect">Disconnect</button>
+                </p>
+            </fieldset>
+            <div>block <span id="swatch"></span> <span id="block"></span></div>
+            <pre id="hud"></pre>
+            <div>
+                WASD move · Q/E layer down/up · left drag paint · right drag erase · wheel color.
+                Shaded: chunks we have. Green: view (H). Orange: hysteresis (H+1).
+            </div>
+            <div id="log"></div>
+        </aside>
 
         <script>
             // Wire format: SPECIFICATION.md §7. Little-endian, no per-message length.
             const PROTOCOL_VERSION = 1;
+            const PX = 8; // pixels per voxel; a chunk is 128 px
+            const SPEED = 16; // voxels per second
+            const POS_LIMIT = 2 ** 23; // entity range in voxels (24.8 fixed point, §4)
+            // Block id -> color; 0 is air. Ids outside the palette (e.g. the bots') are grey.
+            const PALETTE = [
+                null,
+                "#e6194b",
+                "#f58231",
+                "#ffe119",
+                "#bfef45",
+                "#3cb44b",
+                "#42d4f4",
+                "#4363d8",
+                "#911eb4",
+                "#f032e6",
+                "#fabed4",
+                "#9a6324",
+                "#808000",
+                "#469990",
+                "#dcbeff",
+                "#ffffff",
+            ];
+            const OTHER_BLOCK = "#666";
+
             const $ = (id) => document.getElementById(id);
+            const canvas = $("world");
+            const ctx = canvas.getContext("2d");
 
             let ws = null;
-            let state = null;
+            let state = null; // per connection
+            let ticker = null; // set from WELCOME until the connection ends
 
-            function newState() {
+            // Our entity, and the layer we look at. The entity stands on that layer.
+            const me = { x: 8, z: 8 };
+            let layer = 0;
+            let active = 1; // block painted with the left button
+            const keys = new Set(); // WASD held
+            let mouse = null; // cursor position on the canvas
+            let stroke = null; // { block, last: [x, z] } while a button is held
+
+            function newState(view) {
                 return {
+                    view, // [h, v] sent in HELLO
                     id: null,
+                    hz: null,
                     tick: null,
-                    entities: new Map(), // id -> { pos: [x, y, z], data: Uint8Array }
+                    entities: new Map(), // id -> { pos: [x, y, z] (24.8), data: Uint8Array }
                     chunks: new Map(), // "cx,cy,cz" -> Uint16Array(4096), index order (§4)
-                    bytes: 0,
+                    edits: new Map(), // "x,y,z" -> [x, y, z, block], sent at the next tick
+                    sendState: true, // our ENTITY_STATE is due at the next tick
+                    rateSince: performance.now(),
+                    rateBytes: 0,
+                    kibps: 0,
                 };
             }
+
+            const chunkKey = (x, y, z) => `${x >> 4},${y >> 4},${z >> 4}`;
+            const voxelIndex = (x, y, z) => (x & 15) | ((z & 15) << 4) | ((y & 15) << 8);
+            const clampPos = (v) => Math.min(Math.max(v, -POS_LIMIT), POS_LIMIT - 1);
+            const fixedPoint = (v) => Math.round(v * 256); // 24.8 fixed point, as sent (§4)
 
             function log(text) {
                 $("log").textContent += `[${new Date().toLocaleTimeString()}] ${text}\n`;
                 $("log").scrollTop = $("log").scrollHeight;
-            }
-
-            function showCounts() {
-                const s = state ?? newState();
-                $("counts").textContent =
-                    `id ${s.id ?? "-"} | tick ${s.tick ?? "-"} | entities ${s.entities.size}` +
-                    ` | chunks ${s.chunks.size} | bytes received ${s.bytes}`;
             }
 
             /** Reads an integer input, failing loudly instead of wrapping. */
@@ -118,40 +167,38 @@
                 ws.send(bytes);
             }
 
-            // Client → server (§7.2)
+            // Client → server (§7.2). Positions stay inside POS_LIMIT (clampPos),
+            // so no value below can wrap.
 
-            function hello() {
+            function hello([viewH, viewV]) {
                 const buf = new DataView(new ArrayBuffer(5));
                 buf.setUint8(0, 0x01);
                 buf.setUint16(1, PROTOCOL_VERSION, true);
-                buf.setUint8(3, intInput("viewH", 0, 255));
-                buf.setUint8(4, intInput("viewV", 0, 255));
+                buf.setUint8(3, viewH);
+                buf.setUint8(4, viewV);
                 return buf.buffer;
             }
 
             function entityState() {
                 const buf = new DataView(new ArrayBuffer(14));
                 buf.setUint8(0, 0x02);
-                ["posX", "posY", "posZ"].forEach((id, i) => {
-                    // 24.8 fixed point: ±2^23 voxels (§4).
-                    const fixed = Math.round($(id).valueAsNumber * 256);
-                    if (!Number.isInteger(fixed) || fixed < -(2 ** 31) || fixed > 2 ** 31 - 1) {
-                        throw new Error(`${id} out of range`);
-                    }
-                    buf.setInt32(1 + 4 * i, fixed, true);
-                });
+                [me.x, layer, me.z].forEach((v, i) => buf.setInt32(1 + 4 * i, fixedPoint(v), true));
                 buf.setUint8(13, 0); // no data
                 return buf.buffer;
             }
 
-            function voxelEdits() {
-                const buf = new DataView(new ArrayBuffer(17));
+            function voxelEdits(edits) {
+                if (edits.length > 0xffff) throw new Error(`${edits.length} edits in one tick`);
+                const buf = new DataView(new ArrayBuffer(3 + 14 * edits.length));
                 buf.setUint8(0, 0x03);
-                buf.setUint16(1, 1, true);
-                ["voxX", "voxY", "voxZ"].forEach((id, i) => {
-                    buf.setInt32(3 + 4 * i, intInput(id, -(2 ** 31), 2 ** 31 - 1), true);
+                buf.setUint16(1, edits.length, true);
+                edits.forEach(([x, y, z, block], i) => {
+                    const o = 3 + 14 * i;
+                    buf.setInt32(o, x, true);
+                    buf.setInt32(o + 4, y, true);
+                    buf.setInt32(o + 8, z, true);
+                    buf.setUint16(o + 12, block, true);
                 });
-                buf.setUint16(15, intInput("block", 0, 65535), true);
                 return buf.buffer;
             }
 
@@ -179,8 +226,11 @@
                     const type = u8();
                     switch (type) {
                         case 0x81: // WELCOME
+                            if (state.id !== null) throw new Error("second WELCOME");
                             state.id = u32();
-                            log(`WELCOME: entity ${state.id}, ${u8()} Hz`);
+                            state.hz = u8();
+                            log(`WELCOME: entity ${state.id}, ${state.hz} Hz`);
+                            ticker = setInterval(() => run(tick), 1000 / state.hz);
                             break;
                         case 0x82: {
                             // ENTITY_STATE
@@ -233,15 +283,194 @@
             function onMessage(event) {
                 try {
                     if (typeof event.data === "string") throw new Error("text message");
-                    state.bytes += event.data.byteLength;
+                    state.rateBytes += event.data.byteLength;
                     applyFrame(event.data);
                 } catch (e) {
                     // Without per-message lengths the rest of the stream cannot be trusted.
                     log(`protocol error: ${e.message}; disconnecting`);
+                    stopTicking();
                     ws.onmessage = null;
                     ws.close();
                 }
-                showCounts();
+            }
+
+            // Tick: movement and edits go out once per server tick.
+
+            function tick() {
+                const dx = keys.has("d") - keys.has("a");
+                const dz = keys.has("s") - keys.has("w");
+                if (dx || dz) {
+                    me.x = clampPos(me.x + (dx * SPEED) / state.hz);
+                    me.z = clampPos(me.z + (dz * SPEED) / state.hz);
+                    state.sendState = true;
+                }
+                // Moving drags the world under a still cursor.
+                if (stroke && mouse) strokeTo(cursorVoxel());
+                if (state.sendState) {
+                    send(entityState());
+                    state.sendState = false;
+                }
+                if (state.edits.size > 0) {
+                    send(voxelEdits([...state.edits.values()]));
+                    state.edits.clear();
+                }
+            }
+
+            function stopTicking() {
+                clearInterval(ticker);
+                ticker = null;
+                stroke = null;
+            }
+
+            // Painting
+
+            /** Canvas position of voxel (0, 0), so the camera follows our entity. */
+            function origin() {
+                return [Math.round(canvas.width / 2 - me.x * PX), Math.round(canvas.height / 2 - me.z * PX)];
+            }
+
+            function cursorVoxel() {
+                const [ox, oz] = origin();
+                return [Math.floor((mouse.x - ox) / PX), Math.floor((mouse.y - oz) / PX)];
+            }
+
+            function strokeTo([x, z]) {
+                if (!stroke.last) {
+                    edit(x, z);
+                } else {
+                    // Mouse events skip cells on a fast drag: fill the line between them.
+                    const [lx, lz] = stroke.last;
+                    const steps = Math.max(Math.abs(x - lx), Math.abs(z - lz));
+                    for (let i = 1; i <= steps; i++) {
+                        edit(lx + Math.round(((x - lx) * i) / steps), lz + Math.round(((z - lz) * i) / steps));
+                    }
+                }
+                stroke.last = [x, z];
+            }
+
+            function edit(x, z) {
+                const y = layer;
+                // Only sent, never applied here: this is a debug client, so it draws
+                // only what the server sent (§7.2), and our edits show up when their
+                // echo (CHUNK or CHUNK_EDITS) arrives.
+                state.edits.set(`${x},${y},${z}`, [x, y, z, stroke.block]);
+            }
+
+            // Drawing: everything visible, every animation frame.
+
+            function draw() {
+                requestAnimationFrame(draw);
+                if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                    canvas.width = canvas.clientWidth;
+                    canvas.height = canvas.clientHeight;
+                }
+                const w = canvas.width;
+                const h = canvas.height;
+                const [ox, oz] = origin();
+                const CHUNK_PX = 16 * PX;
+                // Visible chunk columns and rows.
+                const cx0 = Math.floor(-ox / CHUNK_PX);
+                const cx1 = Math.floor((w - ox) / CHUNK_PX);
+                const cz0 = Math.floor(-oz / CHUNK_PX);
+                const cz1 = Math.floor((h - oz) / CHUNK_PX);
+
+                ctx.fillStyle = "#111";
+                ctx.fillRect(0, 0, w, h);
+
+                // Chunks we have, and their voxels on this layer.
+                for (let cz = cz0; cz <= cz1; cz++) {
+                    for (let cx = cx0; cx <= cx1; cx++) {
+                        const blocks = state?.chunks.get(`${cx},${layer >> 4},${cz}`);
+                        if (!blocks) continue;
+                        const sx = ox + cx * CHUNK_PX;
+                        const sz = oz + cz * CHUNK_PX;
+                        ctx.fillStyle = "#1f2c3c";
+                        ctx.fillRect(sx, sz, CHUNK_PX, CHUNK_PX);
+                        const base = (layer & 15) << 8;
+                        for (let i = 0; i < 256; i++) {
+                            const block = blocks[base | i];
+                            if (block === 0) continue;
+                            ctx.fillStyle = PALETTE[block] ?? OTHER_BLOCK;
+                            ctx.fillRect(sx + (i & 15) * PX, sz + (i >> 4) * PX, PX, PX);
+                        }
+                    }
+                }
+
+                // Chunk grid.
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                for (let cx = cx0; cx <= cx1 + 1; cx++) {
+                    ctx.moveTo(ox + cx * CHUNK_PX + 0.5, 0);
+                    ctx.lineTo(ox + cx * CHUNK_PX + 0.5, h);
+                }
+                for (let cz = cz0; cz <= cz1 + 1; cz++) {
+                    ctx.moveTo(0, oz + cz * CHUNK_PX + 0.5);
+                    ctx.lineTo(w, oz + cz * CHUNK_PX + 0.5);
+                }
+                ctx.stroke();
+
+                if (state) {
+                    // View and hysteresis boxes around our center chunk (§3.3).
+                    // From the position as sent, so the boxes match the server's.
+                    const cx = fixedPoint(me.x) >> 12;
+                    const cz = fixedPoint(me.z) >> 12;
+                    const box = (r, color) => {
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = 2;
+                        const size = (2 * r + 1) * CHUNK_PX;
+                        ctx.strokeRect(ox + (cx - r) * CHUNK_PX, oz + (cz - r) * CHUNK_PX, size, size);
+                    };
+                    box(state.view[0], "#4c4");
+                    box(state.view[0] + 1, "#e83");
+
+                    // Other entities, where the server last put them.
+                    ctx.font = "12px monospace";
+                    for (const [id, entity] of state.entities) {
+                        const x = ox + (entity.pos[0] / 256) * PX;
+                        const z = oz + (entity.pos[2] / 256) * PX;
+                        dot(x, z, 4, "#fd4");
+                        ctx.fillText(id, x + 6, z - 6);
+                    }
+                }
+                dot(w / 2, h / 2, 6, "#fff");
+
+                let under = "-";
+                if (mouse) {
+                    const [x, z] = cursorVoxel();
+                    ctx.strokeStyle = "#fff";
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(ox + x * PX + 0.5, oz + z * PX + 0.5, PX - 1, PX - 1);
+                    const blocks = state?.chunks.get(chunkKey(x, layer, z));
+                    under = `${x}, ${layer}, ${z}: ${blocks ? `block ${blocks[voxelIndex(x, layer, z)]}` : "chunk not known"}`;
+                }
+                showHud(under);
+            }
+
+            function dot(x, z, radius, color) {
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(x, z, radius, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+
+            function showHud(under) {
+                $("swatch").style.background = PALETTE[active];
+                $("block").textContent = `${active} (wheel)`;
+                if (state) {
+                    const now = performance.now();
+                    if (now - state.rateSince >= 1000) {
+                        state.kibps = state.rateBytes / 1024 / ((now - state.rateSince) / 1000);
+                        state.rateSince = now;
+                        state.rateBytes = 0;
+                    }
+                }
+                $("hud").textContent =
+                    `id ${state?.id ?? "-"} | tick ${state?.tick ?? "-"}\n` +
+                    `entities ${state?.entities.size ?? 0} | chunks ${state?.chunks.size ?? 0}` +
+                    ` | ${(state?.kibps ?? 0).toFixed(1)} KiB/s\n` +
+                    `position ${me.x.toFixed(1)}, ${layer}, ${me.z.toFixed(1)} | layer Y ${layer}\n` +
+                    `cursor ${under}`;
             }
 
             // UI
@@ -257,27 +486,70 @@
             $("connect").onclick = () =>
                 run(() => {
                     if (ws) throw new Error("already connected");
-                    const first = hello();
-                    state = newState();
+                    const view = [intInput("viewH", 0, 255), intInput("viewV", 0, 255)];
                     ws = new WebSocket($("url").value);
+                    state = newState(view);
                     ws.binaryType = "arraybuffer";
                     ws.onopen = () => {
                         log("connected, sending HELLO");
-                        ws.send(first);
+                        ws.send(hello(view));
                     };
                     ws.onmessage = onMessage;
                     ws.onclose = (e) => {
                         log(`closed: code ${e.code}${e.reason ? `, reason "${e.reason}"` : ""}`);
+                        stopTicking();
                         ws = null;
+                        state = null;
                     };
                     ws.onerror = () => log("WebSocket error (see the close code)");
-                    showCounts();
                 });
-            $("disconnect").onclick = () => run(() => ws?.close(1000));
-            $("move").onclick = () => run(() => send(entityState()));
-            $("edit").onclick = () => run(() => send(voxelEdits()));
+            $("disconnect").onclick = () =>
+                run(() => {
+                    stopTicking();
+                    ws?.close(1000);
+                });
 
-            showCounts();
+            canvas.onmousedown = (e) => {
+                if (e.button !== 0 && e.button !== 2) return;
+                if (!ticker) return log("error: not connected");
+                mouse = { x: e.offsetX, y: e.offsetY };
+                stroke = { block: e.button === 0 ? active : 0, last: null };
+                strokeTo(cursorVoxel());
+            };
+            canvas.onmousemove = (e) => {
+                mouse = { x: e.offsetX, y: e.offsetY };
+                if (stroke) strokeTo(cursorVoxel());
+            };
+            canvas.onmouseleave = () => {
+                mouse = null;
+                stroke = null;
+            };
+            window.onmouseup = () => (stroke = null);
+            canvas.oncontextmenu = (e) => e.preventDefault();
+            canvas.onwheel = (e) => {
+                e.preventDefault();
+                const colors = PALETTE.length - 1;
+                active = ((active - 1 + Math.sign(e.deltaY) + colors) % colors) + 1;
+            };
+
+            window.onkeydown = (e) => {
+                if (e.target instanceof HTMLInputElement) return;
+                const key = e.key.toLowerCase();
+                if (["w", "a", "s", "d"].includes(key)) keys.add(key);
+                if (key === "q" || key === "e") {
+                    layer = clampPos(layer + (key === "e" ? 1 : -1));
+                    if (state) state.sendState = true;
+                }
+            };
+            window.onkeyup = (e) => keys.delete(e.key.toLowerCase());
+            // A key or button released outside the page would otherwise keep us
+            // moving or painting.
+            window.onblur = () => {
+                keys.clear();
+                stroke = null;
+            };
+
+            draw();
         </script>
     </body>
 </html>
