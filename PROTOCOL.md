@@ -41,7 +41,7 @@ What a client needs to talk to the server. The code is the reference:
 
 | Type   | Name           | Body                                                    | Size         |
 | ------ | -------------- | ------------------------------------------------------- | ------------ |
-| `0x01` | `HELLO`        | `u16 protocol_version (1), u8 view_h, u8 view_v`        | 5            |
+| `0x01` | `HELLO`        | `u16 protocol_version (1), u8 view_xz, u8 view_y`        | 5            |
 | `0x02` | `ENTITY_STATE` | `i32 x, i32 y, i32 z (24.8), u8 len, len × u8 data`     | 14 + len     |
 | `0x03` | `VOXEL_EDITS`  | `u16 count, count × { i32 x, i32 y, i32 z, u16 block }` | 3 + 14·count |
 
@@ -91,19 +91,19 @@ What a client needs to talk to the server. The code is the reference:
 ### What you receive
 
 Your view is centered on the chunk `c` that contains your entity. A chunk or
-entity at chunk `p` is **in view** when `|p.x − c.x| ≤ H`, `|p.z − c.z| ≤ H`
-and `|p.y − c.y| ≤ V`, where `H` and `V` are your `view_h` and `view_v`.
-Something you have stays while it is within `H + 1` / `V + 1`
-(hysteresis).
+entity at chunk `p` is **in view** when `|p.x − c.x| ≤ view_xz`,
+`|p.z − c.z| ≤ view_xz` and `|p.y − c.y| ≤ view_y`, with your `view_xz` and
+`view_y` from `HELLO`. Something you have stays while it is within
+`view_xz + 1` / `view_y + 1` (hysteresis).
 
 - **Entities**, checked every tick:
   - you get `ENTITY_STATE` when an entity enters your view, and whenever it
     changes while you have it;
-  - you get `ENTITY_REMOVE` when it goes beyond `H + 1` / `V + 1`, or
+  - you get `ENTITY_REMOVE` when it goes beyond `view_xz + 1` / `view_y + 1`, or
     disconnects.
   - You never receive your own entity.
 - **Chunks**, when your center chunk changes:
-  - chunks you have beyond `H + 1` / `V + 1` get `CHUNK_UNLOAD`;
+  - chunks you have beyond `view_xz + 1` / `view_y + 1` get `CHUNK_UNLOAD`;
   - existing chunks in view that you don't have arrive as `CHUNK`, nearest
     first. At most 8 of these arrive per frame, and only while the server has
     no earlier frame queued for you, so entering a built area fills in over
@@ -129,8 +129,8 @@ Something you have stays while it is within `H + 1` / `V + 1`
 The `1002` reasons:
 - `first message must be HELLO`
 - `unsupported protocol version`
-- `view_h too large`
-- `view_v too large`
+- `view_xz too large`
+- `view_y too large`
 - `HELLO must be the whole message`
 - `truncated message`
 - `unexpected message type`
@@ -143,7 +143,7 @@ Your own valid close is echoed.
 
 ## Limits
 
-- `view_h ≤ 16`, `view_v ≤ 8` (chunks).
+- `view_xz ≤ 16`, `view_y ≤ 8` (chunks).
 - Entity `data` ≤ 255 bytes.
 - Edits per `VOXEL_EDITS` ≤ 65535. Send more messages for more edits.
 - Each incoming WebSocket frame's payload < 64 MiB (a limit per frame, not

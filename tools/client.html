@@ -90,8 +90,8 @@
         <aside>
             <div id="connection">
                 <input id="url" value="ws://127.0.0.1:3000" />
-                <label>view_h <input id="viewH" type="number" value="2" min="0" max="255" /></label>
-                <label>view_v <input id="viewV" type="number" value="1" min="0" max="255" /></label>
+                <label>view_xz <input id="viewXZ" type="number" value="2" min="0" max="255" /></label>
+                <label>view_y <input id="viewY" type="number" value="1" min="0" max="255" /></label>
                 <button id="connect">Connect</button>
             </div>
             <div id="palette"></div>
@@ -152,7 +152,7 @@ shaded     → chunks received</pre>
 
             function newState(view) {
                 return {
-                    view, // [h, v] sent in HELLO
+                    view, // [view_xz, view_y] sent in HELLO
                     id: null,
                     hz: null,
                     tick: null,
@@ -193,12 +193,12 @@ shaded     → chunks received</pre>
             // Client → server. Positions stay inside POS_LIMIT (clampPos),
             // so no value below can wrap.
 
-            function hello([viewH, viewV]) {
+            function hello([viewXZ, viewY]) {
                 const buf = new DataView(new ArrayBuffer(5));
                 buf.setUint8(0, 0x01);
                 buf.setUint16(1, PROTOCOL_VERSION, true);
-                buf.setUint8(3, viewH);
-                buf.setUint8(4, viewV);
+                buf.setUint8(3, viewXZ);
+                buf.setUint8(4, viewY);
                 return buf.buffer;
             }
 
@@ -455,8 +455,8 @@ shaded     → chunks received</pre>
                         ctx.fillStyle = color;
                         ctx.fillText(label, x + 4, z + 14);
                     };
-                    box(state.view[0], "#4c4", "H");
-                    box(state.view[0] + 1, "#e83", "H+1");
+                    box(state.view[0], "#4c4", "view");
+                    box(state.view[0] + 1, "#e83", "view+1");
 
                     // Other entities, where the server last put them.
                     for (const [id, entity] of state.entities) {
@@ -530,7 +530,7 @@ shaded     → chunks received</pre>
             selectBlock(active);
 
             function connect() {
-                const view = [intInput("viewH", 0, 255), intInput("viewV", 0, 255)];
+                const view = [intInput("viewXZ", 0, 255), intInput("viewY", 0, 255)];
                 ws = new WebSocket($("url").value);
                 $("connect").textContent = "Disconnect";
                 state = newState(view);

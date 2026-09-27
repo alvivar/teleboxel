@@ -2,8 +2,8 @@
 //! tick with the server's stats. The performance target is defined at 50
 //! clients.
 //!
-//! Usage: bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8]
-//!            [view_v=4] [edits_per_sec=2]
+//! Usage: bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_xz=8]
+//!            [view_y=4] [edits_per_sec=2]
 //!
 //! Each bot walks a circle that crosses chunk borders, sends its entity every
 //! server tick, edits the voxel under it at the given rate, and reads every
@@ -47,8 +47,8 @@ struct Config {
     clients: usize,
     addr: String,
     duration: Duration,
-    view_h: u8,
-    view_v: u8,
+    view_xz: u8,
+    view_y: u8,
     edits_per_sec: f64,
 }
 
@@ -108,8 +108,8 @@ fn parse_args() -> Config {
         clients: arg(&args, 0, "clients", 50),
         addr: arg(&args, 1, "addr", "127.0.0.1:3000".to_string()),
         duration: Duration::from_secs(arg(&args, 2, "seconds", 30)),
-        view_h: arg(&args, 3, "view_h", 8),
-        view_v: arg(&args, 4, "view_v", 4),
+        view_xz: arg(&args, 3, "view_xz", 8),
+        view_y: arg(&args, 4, "view_y", 4),
         edits_per_sec: arg(&args, 5, "edits_per_sec", 2.0),
     };
     if !(config.edits_per_sec.is_finite() && config.edits_per_sec >= 0.0) {
@@ -128,7 +128,7 @@ fn arg<T: FromStr>(args: &[String], index: usize, name: &str, default: T) -> T {
 fn usage_error(name: &str, value: &str) -> ! {
     eprintln!("invalid {name}: {value}");
     eprintln!(
-        "usage: bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8] [view_v=4] [edits_per_sec=2]"
+        "usage: bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_xz=8] [view_y=4] [edits_per_sec=2]"
     );
     process::exit(2);
 }
@@ -273,8 +273,8 @@ fn hello(config: &Config) -> BytesMut {
     let mut message = BytesMut::new();
     message.put_u8(0x01);
     message.put_u16_le(1); // PROTOCOL_VERSION
-    message.put_u8(config.view_h);
-    message.put_u8(config.view_v);
+    message.put_u8(config.view_xz);
+    message.put_u8(config.view_y);
     message
 }
 

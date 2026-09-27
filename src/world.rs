@@ -46,8 +46,8 @@ pub enum Command {
         /// the client, after sending the reason if the world disconnected the
         /// client itself.
         disconnect: oneshot::Sender<&'static str>,
-        view_h: u8,
-        view_v: u8,
+        view_xz: u8,
+        view_y: u8,
     },
     Leave {
         id: u32,
@@ -61,8 +61,8 @@ pub enum Command {
 struct Client {
     tx: mpsc::Sender<Bytes>,
     disconnect: oneshot::Sender<&'static str>,
-    view_h: i32,
-    view_v: i32,
+    view_xz: i32,
+    view_y: i32,
     entity: Option<Entity>,
     /// The center chunk of the last view scan (see `sync_chunks`).
     view_center: Option<ChunkPos>,
@@ -189,8 +189,8 @@ impl World {
                 id,
                 tx,
                 disconnect,
-                view_h,
-                view_v,
+                view_xz,
+                view_y,
             } => {
                 // Sent by the world, not the connection, so that even this
                 // first frame carries a real tick.
@@ -206,8 +206,8 @@ impl World {
                     let client = Client {
                         tx,
                         disconnect,
-                        view_h: i32::from(view_h),
-                        view_v: i32::from(view_v),
+                        view_xz: i32::from(view_xz),
+                        view_y: i32::from(view_y),
                         entity: None,
                         view_center: None,
                         known_chunks: HashSet::new(),
@@ -328,27 +328,27 @@ impl Client {
         edited: &[ChunkPos],
         frame: &mut BytesMut,
     ) {
-        let (h, v) = (self.view_h, self.view_v);
+        let (xz, y) = (self.view_xz, self.view_y);
         // Scanning the view every tick is up to 33 × 33 × 17 lookups per
         // client, over the 1 ms tick target at 50 clients. So the view is only
         // scanned when the entity crosses a chunk boundary.
         if self.view_center != Some(center) {
             self.view_center = Some(center);
-            // Hysteresis: what the client has stays within H + 1, or moving
+            // Hysteresis: what the client has stays within view_xz + 1, or moving
             // back and forth across a border would unload and resend a whole
             // plane of chunks every time.
             self.known_chunks.retain(|&pos| {
-                let keep = in_box(center, pos, h + 1, v + 1);
+                let keep = in_box(center, pos, xz + 1, y + 1);
                 if !keep {
                     protocol::put_chunk_unload(frame, pos);
                 }
                 keep
             });
             self.pending.clear();
-            for y in -v..=v {
-                for z in -h..=h {
-                    for x in -h..=h {
-                        let pos = [center[0] + x, center[1] + y, center[2] + z];
+            for dy in -y..=y {
+                for dz in -xz..=xz {
+                    for dx in -xz..=xz {
+                        let pos = [center[0] + dx, center[1] + dy, center[2] + dz];
                         if chunks.contains_key(&pos) && !self.known_chunks.contains(&pos) {
                             self.pending.push(pos);
                         }
@@ -369,7 +369,7 @@ impl Client {
                 } else {
                     protocol::put_chunk_edits(frame, *pos, &chunk.edits);
                 }
-            } else if in_box(center, *pos, h, v) {
+            } else if in_box(center, *pos, xz, y) {
                 protocol::put_chunk(frame, *pos, &chunk.blocks);
                 self.known_chunks.insert(*pos);
             }
@@ -404,7 +404,7 @@ impl Client {
         destroyed: &[u32],
         frame: &mut BytesMut,
     ) {
-        let (h, v) = (self.view_h, self.view_v);
+        let (xz, y) = (self.view_xz, self.view_y);
         let known = &mut self.known_entities;
         for &other in destroyed {
             if known.remove(&other) {
@@ -416,11 +416,11 @@ impl Client {
                 continue;
             }
             if !known.contains(other) {
-                if in_box(center, *chunk, h, v) {
+                if in_box(center, *chunk, xz, y) {
                     frame.extend_from_slice(state);
                     known.insert(*other);
                 }
-            } else if !in_box(center, *chunk, h + 1, v + 1) {
+            } else if !in_box(center, *chunk, xz + 1, y + 1) {
                 protocol::put_entity_remove(frame, *other);
                 known.remove(other);
             } else if changed.contains(other) {
@@ -442,9 +442,9 @@ fn voxel_chunk_and_index([x, y, z]: [i32; 3]) -> (ChunkPos, u16) {
     ([x >> 4, y >> 4, z >> 4], index as u16)
 }
 
-/// Whether chunk `p` is within `h` horizontally and `v` vertically of `c`.
-fn in_box(c: ChunkPos, p: ChunkPos, h: i32, v: i32) -> bool {
-    (p[0] - c[0]).abs() <= h && (p[2] - c[2]).abs() <= h && (p[1] - c[1]).abs() <= v
+/// Whether chunk `p` is within `xz` of `c` on X and Z, and `y` on Y.
+fn in_box(c: ChunkPos, p: ChunkPos, xz: i32, y: i32) -> bool {
+    (p[0] - c[0]).abs() <= xz && (p[2] - c[2]).abs() <= xz && (p[1] - c[1]).abs() <= y
 }
 
 fn distance_squared(c: ChunkPos, p: ChunkPos) -> i32 {
@@ -463,8 +463,8 @@ mod tests {
             id,
             tx,
             disconnect,
-            view_h: view,
-            view_v: view,
+            view_xz: view,
+            view_y: view,
         });
         rx.try_recv().expect("WELCOME");
         rx
@@ -504,10 +504,10 @@ mod tests {
 
         // (B's chunk x, what A receives)
         let steps: [(i32, Option<Bytes>); 5] = [
-            (1, Some(frame(0, |f| state(f, 1)))), // enters view (H = 1)
-            (2, Some(frame(1, |f| state(f, 2)))), // known, changed, within H + 1
-            (3, Some(frame(2, |f| protocol::put_entity_remove(f, 2)))), // beyond H + 1
-            (2, None),                            // not known, outside H
+            (1, Some(frame(0, |f| state(f, 1)))), // enters view (view_xz = 1)
+            (2, Some(frame(1, |f| state(f, 2)))), // known, changed, within view_xz + 1
+            (3, Some(frame(2, |f| protocol::put_entity_remove(f, 2)))), // beyond view_xz + 1
+            (2, None),                            // not known, outside view_xz
             (1, Some(frame(4, |f| state(f, 1)))), // enters view again
         ];
         for (x, expected) in steps {
@@ -562,7 +562,7 @@ mod tests {
         let expected = frame(0, |f| protocol::put_chunk(f, pos, &blocks(&world)));
         assert_eq!(a.try_recv().ok(), Some(expected));
 
-        // At distance H + 1 the chunk stays known and still gets edits.
+        // At distance view_xz + 1 the chunk stays known and still gets edits.
         move_to(&mut world, 1, -1);
         edit(&mut world, 1, &[[17, 0, 0]], 6);
         world.step();

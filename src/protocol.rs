@@ -9,8 +9,8 @@ use bytes::{Buf, BufMut, BytesMut, TryGetError};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 /// View radii in chunks. They bound each client's tick cost.
-pub const MAX_VIEW_H: u8 = 16;
-pub const MAX_VIEW_V: u8 = 8;
+pub const MAX_VIEW_XZ: u8 = 16;
+pub const MAX_VIEW_Y: u8 = 8;
 
 // Client → server types.
 const HELLO: u8 = 0x01;
@@ -37,8 +37,8 @@ impl From<TryGetError> for ProtocolError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Hello {
-    pub view_h: u8,
-    pub view_v: u8,
+    pub view_xz: u8,
+    pub view_y: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,18 +61,18 @@ pub fn decode_hello(mut buf: &[u8]) -> Result<Hello, ProtocolError> {
     if buf.try_get_u16_le()? != PROTOCOL_VERSION {
         return Err(ProtocolError("unsupported protocol version"));
     }
-    let view_h = buf.try_get_u8()?;
-    let view_v = buf.try_get_u8()?;
-    if view_h > MAX_VIEW_H {
-        return Err(ProtocolError("view_h too large"));
+    let view_xz = buf.try_get_u8()?;
+    let view_y = buf.try_get_u8()?;
+    if view_xz > MAX_VIEW_XZ {
+        return Err(ProtocolError("view_xz too large"));
     }
-    if view_v > MAX_VIEW_V {
-        return Err(ProtocolError("view_v too large"));
+    if view_y > MAX_VIEW_Y {
+        return Err(ProtocolError("view_y too large"));
     }
     if buf.has_remaining() {
         return Err(ProtocolError("HELLO must be the whole message"));
     }
-    Ok(Hello { view_h, view_v })
+    Ok(Hello { view_xz, view_y })
 }
 
 /// Decodes every message of a client message after `HELLO`.
@@ -185,8 +185,8 @@ mod tests {
         assert_eq!(
             decode_hello(&[0x01, 1, 0, 16, 8]),
             Ok(Hello {
-                view_h: 16,
-                view_v: 8
+                view_xz: 16,
+                view_y: 8
             })
         );
         for len in 0..5 {
@@ -195,8 +195,8 @@ mod tests {
         let rejected: [(&[u8], &str); 5] = [
             (&[0x02, 1, 0, 16, 8], "first message must be HELLO"),
             (&[0x01, 2, 0, 16, 8], "unsupported protocol version"),
-            (&[0x01, 1, 0, 17, 8], "view_h too large"),
-            (&[0x01, 1, 0, 16, 9], "view_v too large"),
+            (&[0x01, 1, 0, 17, 8], "view_xz too large"),
+            (&[0x01, 1, 0, 16, 9], "view_y too large"),
             (
                 &[0x01, 1, 0, 16, 8, 0x02],
                 "HELLO must be the whole message",

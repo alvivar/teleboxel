@@ -26,7 +26,7 @@ cargo run --release --bin bot -- 50 127.0.0.1:3000 60   # 50 bots for 60 s
 ```
 
 Bot usage:
-`bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8] [view_v=4] [edits_per_sec=2]`.
+`bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_xz=8] [view_y=4] [edits_per_sec=2]`.
 
 `tools/client.html` is a 2D debug client. Open the file in a browser and
 press Connect. It draws only what the server sent.

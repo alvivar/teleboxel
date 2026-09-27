@@ -824,7 +824,7 @@
                                 <path class="d-line" d="M80 100 H316" marker-end="url(#arrow)" />
                                 <text class="d-small" x="200" y="93" text-anchor="middle">WebSocket upgrade (ws_handler)</text>
                                 <path class="d-line" d="M80 140 H316" marker-end="url(#arrow)" />
-                                <text class="d-small" x="200" y="133" text-anchor="middle">HELLO: version, view_h, view_v</text>
+                                <text class="d-small" x="200" y="133" text-anchor="middle">HELLO: version, view_xz, view_y</text>
                                 <rect class="d-shaded" x="235" y="158" width="170" height="30" rx="8" />
                                 <text class="d-mono" x="320" y="178" text-anchor="middle">decode_hello · next id</text>
                                 <path class="d-line" d="M320 220 H676" marker-end="url(#arrow)" />
@@ -893,8 +893,8 @@
                     <ul>
                         <li>
                             <code>read_hello</code> requires <code>HELLO</code> as the whole first message: version 1,
-                            <code>view_h</code> ≤ 16, <code>view_v</code> ≤ 8 (<code>MAX_VIEW_H</code>,
-                            <code>MAX_VIEW_V</code>: they bound each client's tick cost).
+                            <code>view_xz</code> ≤ 16, <code>view_y</code> ≤ 8 (<code>MAX_VIEW_XZ</code>,
+                            <code>MAX_VIEW_Y</code>: they bound each client's tick cost).
                         </li>
                         <li>
                             The id comes from a global counter, <code>NEXT_ID</code>, and is never reused, not even once
@@ -1049,8 +1049,8 @@
                     <h3>What each client sees</h3>
                     <p>
                         A client's view is a box of chunks around the chunk <b>C</b> that holds its entity:
-                        <code>H</code> chunks each way horizontally, <code>V</code> vertically. What it already has
-                        stays until it is beyond <code>H + 1</code> / <code>V + 1</code>. Without that hysteresis ring,
+                        <code>view_xz</code> chunks each way on X and Z, <code>view_y</code> on Y. What it already has
+                        stays until it is beyond <code>view_xz + 1</code> / <code>view_y + 1</code>. Without that hysteresis ring,
                         moving back and forth across a border would unload and resend a whole plane of chunks every
                         time.
                     </p>
@@ -1059,11 +1059,11 @@
                             <svg viewBox="0 0 372 372" role="img" aria-labelledby="fig3-title fig3-desc">
                                 <title id="fig3-title">The view box and the hysteresis ring, seen from above</title>
                                 <desc id="fig3-desc">
-                                    A 9 by 9 grid of chunks with H equal to 2. The entity's chunk C is in the middle.
-                                    A green box marks the view, 5 by 5 chunks; an orange box marks H plus 1, 7 by 7.
+                                    A 9 by 9 grid of chunks with view_xz equal to 2. The entity's chunk C is in the middle.
+                                    A green box marks the view, 5 by 5 chunks; an orange box marks view_xz plus 1, 7 by 7.
                                     Known chunks are tinted. Five pending chunks inside the view are numbered 1 to 5 in
                                     sending order, nearest first. A known chunk in the ring is kept. Existing chunks
-                                    outside the view are not sent. A chunk beyond H plus 1 is crossed out: unloaded.
+                                    outside the view are not sent. A chunk beyond view_xz plus 1 is crossed out: unloaded.
                                 </desc>
                                 <defs>
                                     <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -1104,23 +1104,23 @@
                                 <!-- boxes -->
                                 <rect class="v-h1" x="60" y="60" width="252" height="252" />
                                 <rect class="v-h" x="96" y="96" width="180" height="180" />
-                                <text class="d-small d-bold d-orange" x="65" y="75">H+1</text>
-                                <text class="d-small d-bold d-green" x="101" y="111">H</text>
+                                <text class="d-small d-bold d-orange" x="65" y="75">view+1</text>
+                                <text class="d-small d-bold d-green" x="101" y="111">view</text>
                                 <!-- the entity -->
                                 <circle class="d-ink" cx="186" cy="186" r="6" />
                                 <text class="d-small d-bold" x="194" y="182">C</text>
                             </svg>
                         </div>
                         <ul class="legend" aria-hidden="true">
-                            <li><span class="sw h"></span>view, H = 2</li>
-                            <li><span class="sw h1"></span>hysteresis, H + 1</li>
+                            <li><span class="sw h"></span>view, view_xz = 2</li>
+                            <li><span class="sw h1"></span>hysteresis, view_xz + 1</li>
                             <li><span class="sw known"></span>the client has it</li>
                             <li><span class="sw pending"></span>pending, sent nearest first</li>
                             <li><span class="sw exists"></span>exists, outside the view: not sent</li>
-                            <li><span class="sw cross">×</span>beyond H + 1: <code>CHUNK_UNLOAD</code></li>
+                            <li><span class="sw cross">×</span>beyond view_xz + 1: <code>CHUNK_UNLOAD</code></li>
                         </ul>
                         <figcaption>
-                            Top-down (X right, Z down, like the debug client); <code>V</code> works the same along Y.
+                            Top-down (X right, Z down, like the debug client); <code>view_y</code> works the same along Y.
                             The entity just moved one chunk to +X: the chunk that was at the left edge of its view is
                             now in the ring and kept, and one that was in the old ring is unloaded.
                         </figcaption>
@@ -1135,7 +1135,7 @@
                             <b>Rescan, only when C changes</b>
                             Scanning the view every tick is up to 33 × 33 × 17 lookups per client, over the 1 ms tick
                             target at 50 clients. So only when the entity crosses a chunk boundary: known chunks beyond
-                            <code>H + 1</code> / <code>V + 1</code> get <code>CHUNK_UNLOAD</code>, and every existing
+                            <code>view_xz + 1</code> / <code>view_y + 1</code> get <code>CHUNK_UNLOAD</code>, and every existing
                             chunk in view that the client lacks goes into <code>pending</code>, sorted so the nearest
                             comes out first.
                         </li>
@@ -1169,7 +1169,7 @@
                                 <rect class="d-shaded" x="380" y="45" width="130" height="40" rx="8" />
                                 <text class="d-text" x="445" y="70" text-anchor="middle">&gt; 2048 edits?</text>
                                 <rect class="d-shaded" x="380" y="165" width="130" height="40" rx="8" />
-                                <text class="d-text" x="445" y="190" text-anchor="middle">in view (H, V)?</text>
+                                <text class="d-text" x="445" y="190" text-anchor="middle">in view?</text>
                                 <rect class="d-accent" x="560" y="10" width="110" height="40" rx="8" />
                                 <text class="d-mono d-ink" x="615" y="35" text-anchor="middle">CHUNK</text>
                                 <rect class="d-accent" x="560" y="70" width="110" height="40" rx="8" />
@@ -1205,9 +1205,9 @@
                     <h3>Entities: <code>sync_entities</code></h3>
                     <p>
                         Checked every tick, because entities move on their own, with the same box and ring as the
-                        chunks. An entity entering the view (<code>H</code>, <code>V</code>) arrives as
+                        chunks. An entity entering the view (<code>view_xz</code>, <code>view_y</code>) arrives as
                         <code>ENTITY_STATE</code>; a known one is resent whenever it changed; one beyond
-                        <code>H + 1</code> / <code>V + 1</code>, or whose client left, gets
+                        <code>view_xz + 1</code> / <code>view_y + 1</code>, or whose client left, gets
                         <code>ENTITY_REMOVE</code>. A client never receives its own entity, and has no view at all
                         until its first <code>ENTITY_STATE</code>.
                     </p>
@@ -1246,7 +1246,7 @@
                         </li>
                         <li>
                             Close codes: <code>1002</code> with a reason for malformed input (for example
-                            <code>truncated message</code>, <code>view_h too large</code>), <code>1011</code> when ids
+                            <code>truncated message</code>, <code>view_xz too large</code>), <code>1011</code> when ids
                             run out.
                         </li>
                         <li>
@@ -1279,7 +1279,7 @@
                                     <code>out</code> figure.
                                 </li>
                                 <li>
-                                    <code>bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8] [view_v=4]
+                                    <code>bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_xz=8] [view_y=4]
                                     [edits_per_sec=2]</code>
                                 </li>
                             </ul>
@@ -1290,7 +1290,7 @@
                             <ul>
                                 <li>
                                     One HTML file, opened from disk. A top-down view of one horizontal layer, with the
-                                    view (H) and hysteresis (H+1) boxes drawn from the position as sent.
+                                    view and hysteresis (view+1) boxes drawn from the position as sent.
                                 </li>
                                 <li>
                                     It draws only what the server sent: its own edits are sent, never applied locally,

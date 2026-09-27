@@ -113,7 +113,7 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
     let mut read = FragmentCollectorRead::new(read);
     let write = Arc::new(Mutex::new(write));
 
-    let Hello { view_h, view_v } = match read_hello(&mut read, &write).await {
+    let Hello { view_xz, view_y } = match read_hello(&mut read, &write).await {
         Ok(Some(hello)) => hello,
         Ok(None) => return End::ClosedByClient.log("new connection"),
         Err(e) => {
@@ -138,13 +138,13 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
             id,
             tx,
             disconnect,
-            view_h,
-            view_v,
+            view_xz,
+            view_y,
         })
         .await
         .expect(WORLD_STOPPED);
     let mut writer = tokio::spawn(write_frames(rx, write.clone()));
-    println!("client {id} connected (view {view_h}/{view_v})");
+    println!("client {id} connected (view xz {view_xz}, y {view_y})");
 
     // This teardown (a stalled client, `disconnected`, the `biased` close) has
     // no automated test. If it changes, check by hand that a client that stops
