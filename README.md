@@ -29,8 +29,7 @@ Bot usage:
 `bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8] [view_v=4] [edits_per_sec=2]`.
 
 `tools/client.html` is a 2D debug client. Open the file in a browser and
-press Connect. If `localhost` does not connect, use `ws://127.0.0.1:3000`.
-It draws only what the server sent.
+press Connect. It draws only what the server sent.
 
 ## Layout
 

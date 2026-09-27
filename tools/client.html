@@ -8,7 +8,7 @@
                 display: flex;
                 height: 100vh;
                 margin: 0;
-                font-family: sans-serif;
+                font-family: system-ui;
                 background: #1e1e1e;
                 color: #e0e0e0;
             }
@@ -22,36 +22,59 @@
             aside {
                 display: flex;
                 flex-direction: column;
-                gap: 8px;
+                gap: 12px;
                 width: 360px;
-                padding: 8px;
+                padding: 12px;
                 box-sizing: border-box;
-            }
-            fieldset {
-                border: 1px solid #444;
-                margin: 0;
             }
             input,
             button {
                 padding: 4px 8px;
+                font: inherit;
                 background: #2d2d2d;
                 color: #e0e0e0;
                 border: 1px solid #555;
+                border-radius: 4px;
+            }
+            #connection {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                align-items: center;
+            }
+            #url {
+                flex: 1 0 100%;
+                box-sizing: border-box;
             }
             input[type="number"] {
-                width: 48px;
+                width: 40px;
+            }
+            #connect {
+                margin-left: auto;
+            }
+            #palette {
+                display: grid;
+                grid-template-columns: repeat(15, 1fr);
+                gap: 4px;
+            }
+            #palette button {
+                aspect-ratio: 1;
+                padding: 0;
+                border: none;
+            }
+            #palette .active {
+                outline: 2px solid #fff;
+                outline-offset: 1px;
             }
             #hud,
+            #help,
             #log {
                 margin: 0;
                 font-family: monospace;
                 white-space: pre-wrap;
             }
-            #swatch {
-                display: inline-block;
-                width: 12px;
-                height: 12px;
-                border: 1px solid #fff;
+            #help {
+                color: #999;
             }
             #log {
                 flex: 1;
@@ -65,29 +88,28 @@
     <body>
         <canvas id="world"></canvas>
         <aside>
-            <fieldset>
-                <legend>Connection</legend>
-                <input id="url" value="ws://localhost:3000" size="28" />
-                <p>
-                    view_h <input id="viewH" type="number" value="2" min="0" max="255" />
-                    view_v <input id="viewV" type="number" value="1" min="0" max="255" />
-                    <button id="connect">Connect</button>
-                    <button id="disconnect">Disconnect</button>
-                </p>
-            </fieldset>
-            <div>block <span id="swatch"></span> <span id="block"></span></div>
-            <pre id="hud"></pre>
-            <div>
-                WASD move · Q/E layer down/up · left drag paint · right drag erase · wheel color.
-                Shaded: chunks we have. Green: view (H). Orange: hysteresis (H+1).
+            <div id="connection">
+                <input id="url" value="ws://127.0.0.1:3000" />
+                <label>view_h <input id="viewH" type="number" value="2" min="0" max="255" /></label>
+                <label>view_v <input id="viewV" type="number" value="1" min="0" max="255" /></label>
+                <button id="connect">Connect</button>
             </div>
+            <div id="palette"></div>
+            <pre id="hud"></pre>
+            <pre id="help">
+WASD       → move
+Q / E      → layer down / up
+drag       → paint
+right drag → erase
+wheel      → zoom
+1–9        → color
+shaded     → chunks received</pre>
             <div id="log"></div>
         </aside>
 
         <script>
             // Wire format: PROTOCOL.md. Little-endian, no per-message length.
             const PROTOCOL_VERSION = 1;
-            const PX = 8; // pixels per voxel; a chunk is 128 px
             const SPEED = 16; // voxels per second
             const POS_LIMIT = 2 ** 23; // entity range in voxels (24.8 fixed point)
             // Block id -> color; 0 is air. Ids outside the palette (e.g. the bots') are grey.
@@ -122,6 +144,7 @@
             // Our entity, and the layer we look at. The entity stands on that layer.
             const me = { x: 8, z: 8 };
             let layer = 0;
+            let px = 8; // CSS pixels per voxel: a power of 2 in [2, 32]
             let active = 1; // block painted with the left button
             const keys = new Set(); // WASD held
             let mouse = null; // cursor position on the canvas
@@ -326,12 +349,15 @@
 
             /** Canvas position of voxel (0, 0), so the camera follows our entity. */
             function origin() {
-                return [Math.round(canvas.width / 2 - me.x * PX), Math.round(canvas.height / 2 - me.z * PX)];
+                return [
+                    Math.round(canvas.clientWidth / 2 - me.x * px),
+                    Math.round(canvas.clientHeight / 2 - me.z * px),
+                ];
             }
 
             function cursorVoxel() {
                 const [ox, oz] = origin();
-                return [Math.floor((mouse.x - ox) / PX), Math.floor((mouse.y - oz) / PX)];
+                return [Math.floor((mouse.x - ox) / px), Math.floor((mouse.y - oz) / px)];
             }
 
             function strokeTo([x, z]) {
@@ -360,19 +386,22 @@
 
             function draw() {
                 requestAnimationFrame(draw);
-                if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-                    canvas.width = canvas.clientWidth;
-                    canvas.height = canvas.clientHeight;
+                const w = canvas.clientWidth;
+                const h = canvas.clientHeight;
+                // Sized in device pixels, drawn in CSS pixels: sharp on HiDPI screens.
+                const dpr = window.devicePixelRatio;
+                if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+                    canvas.width = Math.round(w * dpr);
+                    canvas.height = Math.round(h * dpr);
                 }
-                const w = canvas.width;
-                const h = canvas.height;
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
                 const [ox, oz] = origin();
-                const CHUNK_PX = 16 * PX;
+                const chunkPx = 16 * px;
                 // Visible chunk columns and rows.
-                const cx0 = Math.floor(-ox / CHUNK_PX);
-                const cx1 = Math.floor((w - ox) / CHUNK_PX);
-                const cz0 = Math.floor(-oz / CHUNK_PX);
-                const cz1 = Math.floor((h - oz) / CHUNK_PX);
+                const cx0 = Math.floor(-ox / chunkPx);
+                const cx1 = Math.floor((w - ox) / chunkPx);
+                const cz0 = Math.floor(-oz / chunkPx);
+                const cz1 = Math.floor((h - oz) / chunkPx);
 
                 ctx.fillStyle = "#111";
                 ctx.fillRect(0, 0, w, h);
@@ -382,16 +411,16 @@
                     for (let cx = cx0; cx <= cx1; cx++) {
                         const blocks = state?.chunks.get(`${cx},${layer >> 4},${cz}`);
                         if (!blocks) continue;
-                        const sx = ox + cx * CHUNK_PX;
-                        const sz = oz + cz * CHUNK_PX;
+                        const sx = ox + cx * chunkPx;
+                        const sz = oz + cz * chunkPx;
                         ctx.fillStyle = "#1f2c3c";
-                        ctx.fillRect(sx, sz, CHUNK_PX, CHUNK_PX);
+                        ctx.fillRect(sx, sz, chunkPx, chunkPx);
                         const base = (layer & 15) << 8;
                         for (let i = 0; i < 256; i++) {
                             const block = blocks[base | i];
                             if (block === 0) continue;
                             ctx.fillStyle = PALETTE[block] ?? OTHER_BLOCK;
-                            ctx.fillRect(sx + (i & 15) * PX, sz + (i >> 4) * PX, PX, PX);
+                            ctx.fillRect(sx + (i & 15) * px, sz + (i >> 4) * px, px, px);
                         }
                     }
                 }
@@ -401,12 +430,12 @@
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 for (let cx = cx0; cx <= cx1 + 1; cx++) {
-                    ctx.moveTo(ox + cx * CHUNK_PX + 0.5, 0);
-                    ctx.lineTo(ox + cx * CHUNK_PX + 0.5, h);
+                    ctx.moveTo(ox + cx * chunkPx + 0.5, 0);
+                    ctx.lineTo(ox + cx * chunkPx + 0.5, h);
                 }
                 for (let cz = cz0; cz <= cz1 + 1; cz++) {
-                    ctx.moveTo(0, oz + cz * CHUNK_PX + 0.5);
-                    ctx.lineTo(w, oz + cz * CHUNK_PX + 0.5);
+                    ctx.moveTo(0, oz + cz * chunkPx + 0.5);
+                    ctx.lineTo(w, oz + cz * chunkPx + 0.5);
                 }
                 ctx.stroke();
 
@@ -415,32 +444,37 @@
                     // From the position as sent, so the boxes match the server's.
                     const cx = fixedPoint(me.x) >> 12;
                     const cz = fixedPoint(me.z) >> 12;
-                    const box = (r, color) => {
+                    ctx.font = "12px monospace";
+                    const box = (r, color, label) => {
+                        const x = ox + (cx - r) * chunkPx;
+                        const z = oz + (cz - r) * chunkPx;
+                        const size = (2 * r + 1) * chunkPx;
                         ctx.strokeStyle = color;
                         ctx.lineWidth = 2;
-                        const size = (2 * r + 1) * CHUNK_PX;
-                        ctx.strokeRect(ox + (cx - r) * CHUNK_PX, oz + (cz - r) * CHUNK_PX, size, size);
+                        ctx.strokeRect(x, z, size, size);
+                        ctx.fillStyle = color;
+                        ctx.fillText(label, x + 4, z + 14);
                     };
-                    box(state.view[0], "#4c4");
-                    box(state.view[0] + 1, "#e83");
+                    box(state.view[0], "#4c4", "H");
+                    box(state.view[0] + 1, "#e83", "H+1");
 
                     // Other entities, where the server last put them.
-                    ctx.font = "12px monospace";
                     for (const [id, entity] of state.entities) {
-                        const x = ox + (entity.pos[0] / 256) * PX;
-                        const z = oz + (entity.pos[2] / 256) * PX;
+                        const x = ox + (entity.pos[0] / 256) * px;
+                        const z = oz + (entity.pos[2] / 256) * px;
                         dot(x, z, 4, "#fd4");
                         ctx.fillText(id, x + 6, z - 6);
                     }
                 }
                 dot(w / 2, h / 2, 6, "#fff");
+                if (state?.id != null) ctx.fillText(state.id, w / 2 + 8, h / 2 - 8);
 
                 let under = "-";
                 if (mouse) {
                     const [x, z] = cursorVoxel();
                     ctx.strokeStyle = "#fff";
                     ctx.lineWidth = 1;
-                    ctx.strokeRect(ox + x * PX + 0.5, oz + z * PX + 0.5, PX - 1, PX - 1);
+                    ctx.strokeRect(ox + x * px + 0.5, oz + z * px + 0.5, px - 1, px - 1);
                     const blocks = state?.chunks.get(chunkKey(x, layer, z));
                     under = `${x}, ${layer}, ${z}: ${blocks ? `block ${blocks[voxelIndex(x, layer, z)]}` : "chunk not known"}`;
                 }
@@ -455,8 +489,6 @@
             }
 
             function showHud(under) {
-                $("swatch").style.background = PALETTE[active];
-                $("block").textContent = `${active} (wheel)`;
                 if (state) {
                     const now = performance.now();
                     if (now - state.rateSince >= 1000) {
@@ -469,7 +501,7 @@
                     `id ${state?.id ?? "-"} | tick ${state?.tick ?? "-"}\n` +
                     `entities ${state?.entities.size ?? 0} | chunks ${state?.chunks.size ?? 0}` +
                     ` | ${(state?.kibps ?? 0).toFixed(1)} KiB/s\n` +
-                    `position ${me.x.toFixed(1)}, ${layer}, ${me.z.toFixed(1)} | layer Y ${layer}\n` +
+                    `position ${me.x.toFixed(1)}, ${layer}, ${me.z.toFixed(1)}\n` +
                     `cursor ${under}`;
             }
 
@@ -483,31 +515,47 @@
                 }
             }
 
-            $("connect").onclick = () =>
-                run(() => {
-                    if (ws) throw new Error("already connected");
-                    const view = [intInput("viewH", 0, 255), intInput("viewV", 0, 255)];
-                    ws = new WebSocket($("url").value);
-                    state = newState(view);
-                    ws.binaryType = "arraybuffer";
-                    ws.onopen = () => {
-                        log("connected, sending HELLO");
-                        ws.send(hello(view));
-                    };
-                    ws.onmessage = onMessage;
-                    ws.onclose = (e) => {
-                        log(`closed: code ${e.code}${e.reason ? `, reason "${e.reason}"` : ""}`);
-                        stopTicking();
-                        ws = null;
-                        state = null;
-                    };
-                    ws.onerror = () => log("WebSocket error (see the close code)");
-                });
-            $("disconnect").onclick = () =>
-                run(() => {
+            function selectBlock(block) {
+                active = block;
+                [...$("palette").children].forEach((swatch, i) => swatch.classList.toggle("active", i + 1 === block));
+            }
+
+            for (let block = 1; block < PALETTE.length; block++) {
+                const swatch = document.createElement("button");
+                swatch.style.background = PALETTE[block];
+                swatch.title = `block ${block}`;
+                swatch.onclick = () => selectBlock(block);
+                $("palette").append(swatch);
+            }
+            selectBlock(active);
+
+            function connect() {
+                const view = [intInput("viewH", 0, 255), intInput("viewV", 0, 255)];
+                ws = new WebSocket($("url").value);
+                $("connect").textContent = "Disconnect";
+                state = newState(view);
+                ws.binaryType = "arraybuffer";
+                ws.onopen = () => {
+                    log("connected, sending HELLO");
+                    ws.send(hello(view));
+                };
+                ws.onmessage = onMessage;
+                ws.onclose = (e) => {
+                    log(`closed: code ${e.code}${e.reason ? `, reason "${e.reason}"` : ""}`);
                     stopTicking();
-                    ws?.close(1000);
-                });
+                    ws = null;
+                    state = null;
+                    $("connect").textContent = "Connect";
+                };
+                ws.onerror = () => log("WebSocket error (see the close code)");
+            }
+
+            function disconnect() {
+                stopTicking();
+                ws.close(1000);
+            }
+
+            $("connect").onclick = () => run(ws ? disconnect : connect);
 
             canvas.onmousedown = (e) => {
                 if (e.button !== 0 && e.button !== 2) return;
@@ -526,16 +574,18 @@
             };
             window.onmouseup = () => (stroke = null);
             canvas.oncontextmenu = (e) => e.preventDefault();
+            // Zooms about the center, where the camera keeps our entity.
             canvas.onwheel = (e) => {
                 e.preventDefault();
-                const colors = PALETTE.length - 1;
-                active = ((active - 1 + Math.sign(e.deltaY) + colors) % colors) + 1;
+                if (e.deltaY < 0) px = Math.min(px * 2, 32);
+                if (e.deltaY > 0) px = Math.max(px / 2, 2);
             };
 
             window.onkeydown = (e) => {
                 if (e.target instanceof HTMLInputElement) return;
                 const key = e.key.toLowerCase();
                 if (["w", "a", "s", "d"].includes(key)) keys.add(key);
+                if (/^[1-9]$/.test(key)) selectBlock(Number(key));
                 if (key === "q" || key === "e") {
                     layer = clampPos(layer + (key === "e" ? 1 : -1));
                     if (state) state.sendState = true;
