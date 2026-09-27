@@ -25,7 +25,9 @@ type Writer<S> = Arc<Mutex<WebSocketWrite<WriteHalf<S>>>>;
 
 const WORLD_STOPPED: &str = "world task stopped";
 
-/// Entity ids, never reused while the server runs (§8).
+/// Entity ids. Never reused while the server runs, not even once exhausted:
+/// clients and the world key entities by id, so a reused id could be taken
+/// for an entity they still have.
 static NEXT_ID: AtomicU32 = AtomicU32::new(0);
 
 #[tokio::main]
@@ -74,7 +76,7 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
         Err(e) => return eprintln!("upgrade failed: {e}"),
     };
     // `read_frame` is not cancel-safe, so reading and writing are separate
-    // halves instead of a `select!` (§8).
+    // halves instead of a `select!` next to the outbound channel.
     let (read, write) = ws.split(tokio::io::split);
     let mut read = FragmentCollectorRead::new(read);
     let write = Arc::new(Mutex::new(write));
@@ -90,6 +92,10 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
         eprintln!("entity ids exhausted");
         return close(&write, 1011, "entity ids exhausted").await;
     };
+    // Nothing waits for the world: the id is known here, and the reader starts
+    // at once. The world sends WELCOME at its next tick, so every server frame,
+    // the first included, carries a real tick, and the connection never
+    // encodes server messages.
     let (tx, rx) = mpsc::channel(world::OUTBOUND_QUEUE);
     let (disconnect, mut disconnected) = oneshot::channel();
     world
@@ -105,10 +111,10 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
     let writer = tokio::spawn(write_frames(rx, write.clone()));
 
     // `disconnected` resolves when the world forgets this client: one tick
-    // after `Leave`, or when it disconnects a slow client (§5.1). That bounds
-    // the teardown even when a client that stopped reading keeps the writer,
-    // and with it the pongs and the close, blocked. The reader is abandoned
-    // for good, so cancelling `read_frame` here is safe.
+    // after `Leave`, or when its outbound queue is full. A client that stops
+    // reading blocks the writer mid-write, and with it the pongs and the
+    // close, so only this signal from the world can end the connection. The
+    // reader is abandoned for good, so cancelling `read_frame` here is safe.
     let result = select! {
         result = read_messages(id, &mut read, &write, &world) => result,
         _ = &mut disconnected => Ok(()),
@@ -141,6 +147,7 @@ async fn read_hello<S: AsyncRead + AsyncWrite>(
     }
 }
 
+/// Validates every message once, here. The world trusts the commands.
 async fn read_messages<S: AsyncRead + AsyncWrite>(
     id: u32,
     read: &mut Reader<S>,
@@ -189,8 +196,8 @@ async fn write_frames<S: AsyncWrite>(mut rx: mpsc::Receiver<Bytes>, write: Write
     }
 }
 
-/// Closes with 1002 on malformed input (§7.1), ours or the WebSocket layer's.
-/// Other errors already broke the connection.
+/// Closes with 1002 and a reason on malformed input, ours or the WebSocket
+/// layer's. Other errors already broke the connection.
 async fn close_on_error<S: AsyncWrite>(error: ConnectionError, write: &Writer<S>) {
     match error {
         ConnectionError::Protocol(ProtocolError(reason)) => close(write, 1002, reason).await,

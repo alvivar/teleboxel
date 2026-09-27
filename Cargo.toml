@@ -7,5 +7,8 @@ default-run = "teleboxel"
 [dependencies]
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "io-util"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+# `unstable-split` gives the split read/write halves that src/main.rs is built
+# on. fastwebsockets marks it unstable, so it can change or go away in any
+# release: check it before upgrading.
 fastwebsockets = { version = "0.10.0", features = ["upgrade", "with_axum", "unstable-split"] }
 bytes = "1.12.1"

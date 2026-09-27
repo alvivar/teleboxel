@@ -1,4 +1,6 @@
-//! World state, tick and per-client sync (SPECIFICATION.md §5, §6).
+//! World state, tick and per-client sync. The world produces `Bytes` frames
+//! and knows nothing about WebSocket, but it assumes an ordered, reliable
+//! stream (see `World::send_frames`).
 
 use std::{
     cmp::Reverse,
@@ -18,11 +20,18 @@ use tokio::{
 
 use crate::protocol::{self, ClientMessage};
 
+/// A common game rate; clients interpolate between ticks.
 pub const TICK_HZ: u8 = 30;
+/// Frames per client, about 1 s at `TICK_HZ`. A client this far behind is
+/// disconnected.
 pub const OUTBOUND_QUEUE: usize = 32;
+/// Commands from every connection to the world.
 pub const INBOUND_QUEUE: usize = 1024;
+/// Per client, view-fill snapshots from `pending` only: at most 64 KiB per
+/// frame, about 2 MiB/s. Chunks sent because of edits are not capped.
 const MAX_SNAPSHOTS_PER_TICK: usize = 8;
-/// Above this, a snapshot is sent instead of the edits (§5.2).
+/// Above this, a snapshot is sent instead of the edits: `count` stays inside
+/// a `u16`, and a delta stays roughly snapshot-sized (2048 × 4 B = 8 KiB).
 const MAX_CHUNK_EDITS: usize = 2048;
 const STATS_PERIOD: Duration = Duration::from_secs(5);
 
@@ -54,8 +63,9 @@ struct Client {
     view_h: u8,
     view_v: u8,
     entity: Option<Entity>,
-    /// The center chunk of the last view scan (§6).
+    /// The center chunk of the last view scan (see `sync_chunks`).
     view_center: Option<ChunkPos>,
+    /// What the client has; no versions (see `World::send_frames`).
     known_chunks: HashSet<ChunkPos>,
     /// Chunks in view the client does not have yet, nearest last, so `pop`
     /// takes the nearest.
@@ -63,13 +73,15 @@ struct Client {
     known_entities: HashSet<u32>,
 }
 
-/// The client's entity; its id is the client id (§10).
+/// The client's entity; its id is the client id. One record per client:
+/// several entities per client would first split them.
 struct Entity {
     pos: [i32; 3],
     data: Vec<u8>,
 }
 
-/// Accumulated over one `STATS_PERIOD` (§11).
+/// Accumulated over one `STATS_PERIOD`. Only `step` is timed, not the wait
+/// for the next tick.
 #[derive(Default)]
 struct Stats {
     ticks: u32,
@@ -111,6 +123,7 @@ impl World {
 
     pub async fn run(mut self) {
         let mut ticker = time::interval(Duration::from_secs(1) / u32::from(TICK_HZ));
+        // A late tick is skipped, not made up with a burst.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut period_start = Instant::now();
         loop {
@@ -145,6 +158,8 @@ impl World {
     }
 
     fn step(&mut self) {
+        // Commands are only read here: nothing is sent between ticks, so
+        // reading them earlier would only add wakeups.
         while let Ok(command) = self.rx.try_recv() {
             self.apply(command);
         }
@@ -171,6 +186,8 @@ impl World {
                 view_h,
                 view_v,
             } => {
+                // Sent by the world, not the connection, so that even this
+                // first frame carries a real tick.
                 let mut frame = BytesMut::new();
                 protocol::put_tick(&mut frame, self.tick);
                 protocol::put_welcome(&mut frame, id, TICK_HZ);
@@ -196,8 +213,8 @@ impl World {
             }
             Command::Leave { id } => self.remove(id),
             Command::Message { id, message } => {
-                // Unknown once the world has disconnected it (§5.1); its
-                // `Leave` follows.
+                // Unknown once the world has disconnected it; its `Leave`
+                // follows.
                 let Some(client) = self.clients.get_mut(&id) else {
                     return;
                 };
@@ -233,8 +250,13 @@ impl World {
         }
     }
 
-    /// Builds and sends each client's frame (§5.2). Returns the clients to
-    /// disconnect (§5.1).
+    /// Builds and sends each client's frame. Returns the clients to disconnect.
+    ///
+    /// The stream is reliable, or the client is gone: `try_send` never awaits
+    /// the client, and a full queue disconnects it instead of dropping the
+    /// frame. So the world only remembers what each client has, never which
+    /// version. Dropping frames, as an unreliable transport would, needs
+    /// versioned state per client.
     fn send_frames(&mut self) -> Vec<u32> {
         // Each entity's ENTITY_STATE, encoded once for every viewer.
         let entities: Vec<(u32, ChunkPos, Bytes)> = self
@@ -250,7 +272,7 @@ impl World {
 
         let mut disconnected = Vec::new();
         for (&id, client) in &mut self.clients {
-            // No entity, no view (§3.3).
+            // No entity, no view: nothing but WELCOME.
             let Some(entity) = &client.entity else {
                 continue;
             };
@@ -268,6 +290,7 @@ impl World {
                 &self.destroyed,
                 &mut frame,
             );
+            // Nothing to send, no frame.
             if frame.len() == header_len {
                 continue;
             }
@@ -292,7 +315,8 @@ impl Client {
         (i32::from(self.view_h), i32::from(self.view_v))
     }
 
-    /// The chunk part of this tick's frame (§5.2, §6).
+    /// The chunk part of this tick's frame. The work is bounded by what
+    /// changed, not by the view size.
     fn sync_chunks(
         &mut self,
         center: ChunkPos,
@@ -301,8 +325,14 @@ impl Client {
         frame: &mut BytesMut,
     ) {
         let (h, v) = self.view();
+        // Scanning the view every tick is up to 33 × 33 × 17 lookups per
+        // client, over the 1 ms tick target at 50 clients. So the view is only
+        // scanned when the entity crosses a chunk boundary.
         if self.view_center != Some(center) {
             self.view_center = Some(center);
+            // Hysteresis: what the client has stays within H + 1, or moving
+            // back and forth across a border would unload and resend a whole
+            // plane of chunks every time.
             self.known_chunks.retain(|&pos| {
                 let keep = in_box(center, pos, h + 1, v + 1);
                 if !keep {
@@ -327,6 +357,8 @@ impl Client {
 
         for pos in edited {
             let chunk = &chunks[pos];
+            // Wherever it is: a known chunk in the hysteresis ring is never
+            // resent, so without its edits it would come back into view stale.
             if self.known_chunks.contains(pos) {
                 if chunk.edits.len() > MAX_CHUNK_EDITS {
                     protocol::put_chunk(frame, *pos, &chunk.blocks);
@@ -339,7 +371,10 @@ impl Client {
             }
         }
 
-        // Only while the writer keeps up (§5.2).
+        // Only to an empty queue, i.e. while the writer keeps up: otherwise a
+        // slow link fills up with snapshots and entity updates wait behind
+        // them. Capped, because entering a built area can mean megabytes.
+        // Nearest first, or far chunks could arrive before near ones.
         if self.tx.capacity() == self.tx.max_capacity() {
             let mut sent = 0;
             while sent < MAX_SNAPSHOTS_PER_TICK
@@ -354,7 +389,8 @@ impl Client {
         }
     }
 
-    /// The entity part of this tick's frame (§5.2).
+    /// The entity part of this tick's frame. Checked every tick, because
+    /// entities move on their own. Same view and hysteresis as the chunks.
     fn sync_entities(
         &mut self,
         id: u32,
@@ -390,18 +426,19 @@ impl Client {
     }
 }
 
-/// §4: entity positions are 1/256 voxel, chunks are 16 voxels.
+/// Entity positions are 1/256 voxel (24.8), chunks are 16 voxels.
 fn entity_chunk([x, y, z]: [i32; 3]) -> ChunkPos {
     [x >> 12, y >> 12, z >> 12]
 }
 
-/// §4: the voxel's chunk and its index inside it.
+/// The voxel's chunk and its index inside it, Y-major so that each horizontal
+/// layer is contiguous.
 fn voxel_chunk_and_index([x, y, z]: [i32; 3]) -> (ChunkPos, u16) {
     let index = (x & 15) | ((z & 15) << 4) | ((y & 15) << 8);
     ([x >> 4, y >> 4, z >> 4], index as u16)
 }
 
-/// Whether chunk `p` is within `h` horizontally and `v` vertically of `c` (§3.3).
+/// Whether chunk `p` is within `h` horizontally and `v` vertically of `c`.
 fn in_box(c: ChunkPos, p: ChunkPos, h: i32, v: i32) -> bool {
     (p[0] - c[0]).abs() <= h && (p[2] - c[2]).abs() <= h && (p[1] - c[1]).abs() <= v
 }

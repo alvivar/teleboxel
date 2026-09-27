@@ -1,5 +1,6 @@
-//! Load bot: N well-behaved clients against a running server (SPECIFICATION.md
-//! §12 step 6), to measure §11 with the server's stats.
+//! Load bot: N well-behaved clients against a running server, to measure the
+//! tick with the server's stats. The performance target is defined at 50
+//! clients.
 //!
 //! Usage: bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8]
 //!            [view_v=4] [edits_per_sec=2]
@@ -34,7 +35,7 @@ const REPORT_PERIOD: Duration = Duration::from_secs(5);
 const RADIUS: f64 = 24.0;
 const SPACING: f64 = 48.0;
 const SPEED: f64 = 6.0; // voxels per second
-/// Opaque entity data (§3.2), sized like orientation + animation state.
+/// Opaque entity data, sized like orientation + animation state.
 const ENTITY_DATA: [u8; 8] = [0; 8];
 
 static CONNECTED: AtomicUsize = AtomicUsize::new(0);
@@ -227,7 +228,7 @@ fn binary(message: BytesMut) -> Frame<'static> {
     Frame::binary(Payload::Bytes(message))
 }
 
-/// §7.3: `u32 tick, 0x81 WELCOME, u32 entity_id, u8 tick_hz`.
+/// `u32 tick, 0x81 WELCOME, u32 entity_id, u8 tick_hz` (PROTOCOL.md).
 fn parse_welcome(frame: &Frame) -> Result<u8, BoxError> {
     match (frame.opcode, &frame.payload[..]) {
         (OpCode::Binary, [_, _, _, _, 0x81, _, _, _, _, tick_hz]) => Ok(*tick_hz),
@@ -266,7 +267,7 @@ fn position(index: usize, secs: f64) -> [f64; 3] {
     ]
 }
 
-// Client → server messages (§7.2).
+// Client → server messages (PROTOCOL.md).
 
 fn hello(config: &Config) -> BytesMut {
     let mut message = BytesMut::new();
@@ -281,7 +282,7 @@ fn entity_state(pos: [f64; 3]) -> BytesMut {
     let mut message = BytesMut::new();
     message.put_u8(0x02);
     for coordinate in pos {
-        message.put_i32_le((coordinate * 256.0) as i32); // 24.8 fixed point (§4)
+        message.put_i32_le((coordinate * 256.0) as i32); // 24.8 fixed point
     }
     message.put_u8(ENTITY_DATA.len() as u8);
     message.put_slice(&ENTITY_DATA);

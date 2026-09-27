@@ -1,10 +1,14 @@
-//! Wire format (SPECIFICATION.md §7). The server only decodes client → server
-//! messages and only encodes server → client messages. All integers are
-//! little-endian.
+//! Wire format, documented for client authors in PROTOCOL.md. The server only
+//! decodes client → server messages and only encodes server → client messages.
+//! All integers are little-endian.
+//!
+//! Malformed input is an error, never skipped or guessed: the connection is
+//! closed with the error as the reason.
 
 use bytes::{Buf, BufMut, BytesMut, TryGetError};
 
 pub const PROTOCOL_VERSION: u16 = 1;
+/// View radii in chunks. They bound each client's tick cost.
 pub const MAX_VIEW_H: u8 = 16;
 pub const MAX_VIEW_V: u8 = 8;
 
@@ -113,7 +117,8 @@ fn get_pos(buf: &mut &[u8]) -> Result<[i32; 3], ProtocolError> {
     ])
 }
 
-/// Starts a server → client frame.
+/// Starts a server → client frame. Clients interpolate entities by this tick,
+/// not by arrival time, which carries network jitter.
 pub fn put_tick(frame: &mut BytesMut, tick: u32) {
     frame.put_u32_le(tick);
 }
@@ -124,7 +129,7 @@ pub fn put_welcome(frame: &mut BytesMut, entity_id: u32, tick_hz: u8) {
     frame.put_u8(tick_hz);
 }
 
-/// `data` is at most 255 bytes (§3.2).
+/// `data` is at most 255 bytes: it arrived with a `u8` length.
 pub fn put_entity_state(frame: &mut BytesMut, id: u32, pos: [i32; 3], data: &[u8]) {
     frame.put_u8(ENTITY_STATE_OUT);
     frame.put_u32_le(id);
@@ -146,7 +151,8 @@ pub fn put_chunk(frame: &mut BytesMut, pos: [i32; 3], blocks: &[u16; 4096]) {
     }
 }
 
-/// `edits` are `(index, block)` pairs, at most 2048 of them (§5.2).
+/// `edits` are `(index, block)` pairs, at most 2048 of them (`MAX_CHUNK_EDITS`
+/// in world.rs), so `count` fits.
 pub fn put_chunk_edits(frame: &mut BytesMut, pos: [i32; 3], edits: &[(u16, u16)]) {
     frame.put_u8(CHUNK_EDITS);
     put_pos(frame, pos);

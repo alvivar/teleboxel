@@ -85,11 +85,11 @@
         </aside>
 
         <script>
-            // Wire format: SPECIFICATION.md §7. Little-endian, no per-message length.
+            // Wire format: PROTOCOL.md. Little-endian, no per-message length.
             const PROTOCOL_VERSION = 1;
             const PX = 8; // pixels per voxel; a chunk is 128 px
             const SPEED = 16; // voxels per second
-            const POS_LIMIT = 2 ** 23; // entity range in voxels (24.8 fixed point, §4)
+            const POS_LIMIT = 2 ** 23; // entity range in voxels (24.8 fixed point)
             // Block id -> color; 0 is air. Ids outside the palette (e.g. the bots') are grey.
             const PALETTE = [
                 null,
@@ -134,7 +134,7 @@
                     hz: null,
                     tick: null,
                     entities: new Map(), // id -> { pos: [x, y, z] (24.8), data: Uint8Array }
-                    chunks: new Map(), // "cx,cy,cz" -> Uint16Array(4096), index order (§4)
+                    chunks: new Map(), // "cx,cy,cz" -> Uint16Array(4096), index x | z << 4 | y << 8
                     edits: new Map(), // "x,y,z" -> [x, y, z, block], sent at the next tick
                     sendState: true, // our ENTITY_STATE is due at the next tick
                     rateSince: performance.now(),
@@ -146,7 +146,7 @@
             const chunkKey = (x, y, z) => `${x >> 4},${y >> 4},${z >> 4}`;
             const voxelIndex = (x, y, z) => (x & 15) | ((z & 15) << 4) | ((y & 15) << 8);
             const clampPos = (v) => Math.min(Math.max(v, -POS_LIMIT), POS_LIMIT - 1);
-            const fixedPoint = (v) => Math.round(v * 256); // 24.8 fixed point, as sent (§4)
+            const fixedPoint = (v) => Math.round(v * 256); // 24.8 fixed point, as sent
 
             function log(text) {
                 $("log").textContent += `[${new Date().toLocaleTimeString()}] ${text}\n`;
@@ -167,7 +167,7 @@
                 ws.send(bytes);
             }
 
-            // Client → server (§7.2). Positions stay inside POS_LIMIT (clampPos),
+            // Client → server. Positions stay inside POS_LIMIT (clampPos),
             // so no value below can wrap.
 
             function hello([viewH, viewV]) {
@@ -202,7 +202,7 @@
                 return buf.buffer;
             }
 
-            // Server → client (§7.3). Throws on anything unexpected.
+            // Server → client. Throws on anything unexpected.
 
             function applyFrame(buffer) {
                 const view = new DataView(buffer);
@@ -351,7 +351,7 @@
             function edit(x, z) {
                 const y = layer;
                 // Only sent, never applied here: this is a debug client, so it draws
-                // only what the server sent (§7.2), and our edits show up when their
+                // only what the server sent, and our edits show up when their
                 // echo (CHUNK or CHUNK_EDITS) arrives.
                 state.edits.set(`${x},${y},${z}`, [x, y, z, stroke.block]);
             }
@@ -411,7 +411,7 @@
                 ctx.stroke();
 
                 if (state) {
-                    // View and hysteresis boxes around our center chunk (§3.3).
+                    // View and hysteresis boxes around our center chunk.
                     // From the position as sent, so the boxes match the server's.
                     const cx = fixedPoint(me.x) >> 12;
                     const cz = fixedPoint(me.z) >> 12;
