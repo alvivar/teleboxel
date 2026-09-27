@@ -113,7 +113,7 @@ fn parse_args() -> Config {
         edits_per_sec: arg(&args, 5, "edits_per_sec", 2.0),
     };
     if !(config.edits_per_sec.is_finite() && config.edits_per_sec >= 0.0) {
-        usage_error("edits_per_sec", &args[5]);
+        usage_error("edits_per_sec", &config.edits_per_sec.to_string());
     }
     config
 }

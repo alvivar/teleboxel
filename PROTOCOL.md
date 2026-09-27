@@ -32,10 +32,10 @@ What a client needs to talk to the server. The code is the reference:
 - Each message starts with a `u8 type`. There is no per-message length: the
   size follows from the contents. Apply messages in order.
 - `tick` counts world steps at `tick_hz`, for interpolating by server tick
-  rather than by arrival time. It is a `u32` that starts at 0 and counts
-  up by one per step. The server sends no
-  message when it has nothing for you, so ticks can be skipped. The frame
-  after `WELCOME` can carry the same tick.
+  rather than by arrival time. It is a `u32` that starts at 0, counts up by
+  one per step and wraps. The server sends no message when it has nothing for
+  you, so ticks can be skipped. The frame after `WELCOME` can carry the same
+  tick.
 
 ## Client → server
 

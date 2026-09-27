@@ -42,9 +42,10 @@ pub enum Command {
     Join {
         id: u32,
         tx: mpsc::Sender<Bytes>,
-        /// Never sent. The world drops it when it forgets the client, which
-        /// tells the connection to close.
-        disconnect: oneshot::Sender<()>,
+        /// Tells the connection to close: the world drops it when it forgets
+        /// the client, after sending the reason if the world disconnected the
+        /// client itself.
+        disconnect: oneshot::Sender<&'static str>,
         view_h: u8,
         view_v: u8,
     },
@@ -59,9 +60,9 @@ pub enum Command {
 
 struct Client {
     tx: mpsc::Sender<Bytes>,
-    _disconnect: oneshot::Sender<()>,
-    view_h: u8,
-    view_v: u8,
+    disconnect: oneshot::Sender<&'static str>,
+    view_h: i32,
+    view_v: i32,
     entity: Option<Entity>,
     /// The center chunk of the last view scan (see `sync_chunks`).
     view_center: Option<ChunkPos>,
@@ -171,10 +172,15 @@ impl World {
         self.changed.clear();
         self.destroyed.clear();
         // After the clear, so the others get ENTITY_REMOVE next tick.
-        for id in disconnected {
-            self.remove(id);
+        for (id, reason) in disconnected {
+            let client = self.remove(id).expect("disconnected clients are known");
+            if let Some(reason) = reason {
+                // Fails only if the connection has already ended.
+                let _ = client.disconnect.send(reason);
+            }
         }
-        self.tick += 1;
+        // After ~4.5 years at 30 Hz. PROTOCOL.md tells clients.
+        self.tick = self.tick.wrapping_add(1);
     }
 
     fn apply(&mut self, command: Command) {
@@ -199,9 +205,9 @@ impl World {
                     self.stats.bytes_out += len;
                     let client = Client {
                         tx,
-                        _disconnect: disconnect,
-                        view_h,
-                        view_v,
+                        disconnect,
+                        view_h: i32::from(view_h),
+                        view_v: i32::from(view_v),
                         entity: None,
                         view_center: None,
                         known_chunks: HashSet::new(),
@@ -211,7 +217,9 @@ impl World {
                     self.clients.insert(id, client);
                 }
             }
-            Command::Leave { id } => self.remove(id),
+            Command::Leave { id } => {
+                self.remove(id);
+            }
             Command::Message { id, message } => {
                 // Unknown once the world has disconnected it; its `Leave`
                 // follows.
@@ -244,20 +252,21 @@ impl World {
 
     /// Removes a client and destroys its entity. The id is already unknown
     /// when the world disconnected the client before its `Leave` arrived.
-    fn remove(&mut self, id: u32) {
-        if self.clients.remove(&id).is_some() {
-            self.destroyed.push(id);
-        }
+    fn remove(&mut self, id: u32) -> Option<Client> {
+        let client = self.clients.remove(&id)?;
+        self.destroyed.push(id);
+        Some(client)
     }
 
-    /// Builds and sends each client's frame. Returns the clients to disconnect.
+    /// Builds and sends each client's frame. Returns the clients to disconnect,
+    /// with the reason for their connection if it does not know it already.
     ///
     /// The stream is reliable, or the client is gone: `try_send` never awaits
     /// the client, and a full queue disconnects it instead of dropping the
     /// frame. So the world only remembers what each client has, never which
     /// version. Dropping frames, as an unreliable transport would, needs
     /// versioned state per client.
-    fn send_frames(&mut self) -> Vec<u32> {
+    fn send_frames(&mut self) -> Vec<(u32, Option<&'static str>)> {
         // Each entity's ENTITY_STATE, encoded once for every viewer.
         let entities: Vec<(u32, ChunkPos, Bytes)> = self
             .clients
@@ -299,11 +308,10 @@ impl World {
             match client.tx.try_send(frame.freeze()) {
                 Ok(()) => self.stats.bytes_out += len,
                 Err(TrySendError::Full(_)) => {
-                    eprintln!("client {id}: outbound queue full, disconnecting");
-                    disconnected.push(id);
+                    disconnected.push((id, Some("outbound queue full")));
                 }
-                // The connection already ended.
-                Err(TrySendError::Closed(_)) => disconnected.push(id),
+                // The connection already ended, and knows why.
+                Err(TrySendError::Closed(_)) => disconnected.push((id, None)),
             }
         }
         disconnected
@@ -311,10 +319,6 @@ impl World {
 }
 
 impl Client {
-    fn view(&self) -> (i32, i32) {
-        (i32::from(self.view_h), i32::from(self.view_v))
-    }
-
     /// The chunk part of this tick's frame. The work is bounded by what
     /// changed, not by the view size.
     fn sync_chunks(
@@ -324,7 +328,7 @@ impl Client {
         edited: &[ChunkPos],
         frame: &mut BytesMut,
     ) {
-        let (h, v) = self.view();
+        let (h, v) = (self.view_h, self.view_v);
         // Scanning the view every tick is up to 33 × 33 × 17 lookups per
         // client, over the 1 ms tick target at 50 clients. So the view is only
         // scanned when the entity crosses a chunk boundary.
@@ -400,7 +404,7 @@ impl Client {
         destroyed: &[u32],
         frame: &mut BytesMut,
     ) {
-        let (h, v) = self.view();
+        let (h, v) = (self.view_h, self.view_v);
         let known = &mut self.known_entities;
         for &other in destroyed {
             if known.remove(&other) {

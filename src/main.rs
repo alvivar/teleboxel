@@ -1,9 +1,12 @@
 mod protocol;
 mod world;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
+use std::{
+    fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
@@ -70,6 +73,35 @@ impl From<WebSocketError> for ConnectionError {
     }
 }
 
+/// Why a connection ended.
+enum End {
+    ClosedByClient,
+    /// Also the cause of the close frame, if any (see `close_on_error`).
+    Reader(ConnectionError),
+    Writer(WebSocketError),
+    /// The world disconnected the client, for this reason.
+    World(&'static str),
+}
+
+impl End {
+    /// One line per connection. Leaving, however abruptly, is the client's
+    /// doing and goes to stdout; stderr is only for failures on our side.
+    fn log(&self, who: impl fmt::Display) {
+        match self {
+            End::ClosedByClient => println!("{who} disconnected: closed by client"),
+            End::World(reason) => println!("{who} disconnected: {reason}"),
+            End::Reader(ConnectionError::Protocol(ProtocolError(reason))) => {
+                println!("{who} disconnected: protocol error \"{reason}\"");
+            }
+            End::Reader(ConnectionError::WebSocket(e)) | End::Writer(e) => match e {
+                e if is_malformed(e) => println!("{who} disconnected: protocol error \"{e}\""),
+                e if is_peer_loss(e) => println!("{who} disconnected: connection lost ({e})"),
+                e => eprintln!("{who} failed: {e}"),
+            },
+        }
+    }
+}
+
 async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
     let ws = match fut.await {
         Ok(ws) => ws,
@@ -83,8 +115,11 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
 
     let Hello { view_h, view_v } = match read_hello(&mut read, &write).await {
         Ok(Some(hello)) => hello,
-        Ok(None) => return,
-        Err(e) => return close_on_error(e, &write).await,
+        Ok(None) => return End::ClosedByClient.log("new connection"),
+        Err(e) => {
+            close_on_error(&e, &write).await;
+            return End::Reader(e).log("new connection");
+        }
     };
 
     let Ok(id) = NEXT_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -108,22 +143,42 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
         })
         .await
         .expect(WORLD_STOPPED);
-    let writer = tokio::spawn(write_frames(rx, write.clone()));
+    let mut writer = tokio::spawn(write_frames(rx, write.clone()));
+    println!("client {id} connected (view {view_h}/{view_v})");
 
+    // This teardown (a stalled client, `disconnected`, the `biased` close) has
+    // no automated test. If it changes, check by hand that a client that stops
+    // reading, while another one generates traffic, is closed within ~1-2 s.
+    //
     // `disconnected` resolves when the world forgets this client: one tick
     // after `Leave`, or when its outbound queue is full. A client that stops
     // reading blocks the writer mid-write, and with it the pongs and the
     // close, so only this signal from the world can end the connection. The
     // reader is abandoned for good, so cancelling `read_frame` here is safe.
-    let result = select! {
-        result = read_messages(id, &mut read, &write, &world) => result,
-        _ = &mut disconnected => Ok(()),
+    // `biased`: the reader's reason comes first when both are ready.
+    let end = select! {
+        biased;
+        result = read_messages(id, &mut read, &write, &world) => match result {
+            Ok(()) => End::ClosedByClient,
+            Err(e) => End::Reader(e),
+        },
+        reason = &mut disconnected => match reason {
+            Ok(reason) => End::World(reason),
+            // Dropped without a reason: the world found the queue closed,
+            // because the writer failed.
+            Err(_) => End::Writer(
+                (&mut writer)
+                    .await
+                    .expect("writer panicked")
+                    .expect_err("the writer only stops early on an error"),
+            ),
+        },
     };
     world
         .send(Command::Leave { id })
         .await
         .expect(WORLD_STOPPED);
-    if let Err(e) = result {
+    if let End::Reader(e) = &end {
         // `biased`: the world may already have forgotten the client, but a
         // writable close must still be attempted first.
         select! {
@@ -132,6 +187,7 @@ async fn handle_client(world: mpsc::Sender<Command>, fut: upgrade::UpgradeFut) {
             _ = &mut disconnected => {}
         }
     }
+    end.log(format_args!("client {id}"));
     // Dropping the last handles of both halves closes the socket.
     writer.abort();
 }
@@ -171,10 +227,18 @@ async fn next_message<S: AsyncRead + AsyncWrite>(
     write: &Writer<S>,
 ) -> Result<Option<Payload<'static>>, ConnectionError> {
     loop {
-        // Pongs and close replies go through the writer.
+        // Pongs and close replies go through the writer. `read_frame` wraps
+        // their errors in `SendError`; unwrapping keeps the cause, often a
+        // client that went away.
         let frame = read
             .read_frame(&mut |frame| async move { write.lock().await.write_frame(frame).await })
-            .await?;
+            .await
+            .map_err(|e| match e {
+                WebSocketError::SendError(e) => *e
+                    .downcast::<WebSocketError>()
+                    .expect("the writer's errors are WebSocketError"),
+                e => e,
+            })?;
         match frame.opcode {
             OpCode::Binary => return Ok(Some(frame.payload)),
             OpCode::Text => return Err(ProtocolError("text messages are not supported").into()),
@@ -184,42 +248,71 @@ async fn next_message<S: AsyncRead + AsyncWrite>(
     }
 }
 
-async fn write_frames<S: AsyncWrite>(mut rx: mpsc::Receiver<Bytes>, write: Writer<S>) {
+/// Returns when the world closes the queue, or on the first write error.
+async fn write_frames<S: AsyncWrite>(
+    mut rx: mpsc::Receiver<Bytes>,
+    write: Writer<S>,
+) -> Result<(), WebSocketError> {
     while let Some(frame) = rx.recv().await {
         let frame = Frame::binary(Payload::Borrowed(&frame));
-        match write.lock().await.write_frame(frame).await {
-            Ok(()) => {}
-            // A close frame was already written: the connection is ending.
-            Err(WebSocketError::ConnectionClosed) => return,
-            Err(e) => return eprintln!("write failed: {e}"),
-        }
+        write.lock().await.write_frame(frame).await?;
     }
+    Ok(())
 }
 
-/// Closes with 1002 and a reason on malformed input, ours or the WebSocket
-/// layer's. Other errors already broke the connection.
-async fn close_on_error<S: AsyncWrite>(error: ConnectionError, write: &Writer<S>) {
-    match error {
-        ConnectionError::Protocol(ProtocolError(reason)) => close(write, 1002, reason).await,
-        ConnectionError::WebSocket(
-            e @ (WebSocketError::InvalidFragment
+/// Malformed input at the WebSocket layer: the client's fault, like a
+/// `ProtocolError`.
+fn is_malformed(e: &WebSocketError) -> bool {
+    matches!(
+        e,
+        WebSocketError::InvalidFragment
             | WebSocketError::InvalidUTF8
             | WebSocketError::InvalidContinuationFrame
             | WebSocketError::InvalidCloseFrame
+            | WebSocketError::InvalidCloseCode
             | WebSocketError::ReservedBitsNotZero
             | WebSocketError::ControlFrameFragmented
             | WebSocketError::PingFrameTooLarge
             | WebSocketError::FrameTooLarge
-            | WebSocketError::InvalidValue),
-        ) => close(write, 1002, &e.to_string()).await,
-        // Includes `InvalidCloseCode`, which fastwebsockets already answered with 1002.
-        ConnectionError::WebSocket(e) => eprintln!("connection failed: {e}"),
+            | WebSocketError::InvalidValue
+    )
+}
+
+/// Closes with 1002 and a reason on malformed input, ours or the WebSocket
+/// layer's. Other errors already broke the connection.
+async fn close_on_error<S: AsyncWrite>(error: &ConnectionError, write: &Writer<S>) {
+    match error {
+        ConnectionError::Protocol(ProtocolError(reason)) => close(write, 1002, reason).await,
+        // fastwebsockets already answered it with 1002.
+        ConnectionError::WebSocket(WebSocketError::InvalidCloseCode) => {}
+        ConnectionError::WebSocket(e) if is_malformed(e) => {
+            close(write, 1002, &e.to_string()).await;
+        }
+        ConnectionError::WebSocket(_) => {}
+    }
+}
+
+/// The client went away: how a connection usually ends without a close.
+fn is_peer_loss(e: &WebSocketError) -> bool {
+    match e {
+        WebSocketError::UnexpectedEOF => true,
+        WebSocketError::IoError(e) => matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
     }
 }
 
 async fn close<S: AsyncWrite>(write: &Writer<S>, code: u16, reason: &str) {
     let frame = Frame::close(code, reason.as_bytes());
-    if let Err(e) = write.lock().await.write_frame(frame).await {
-        eprintln!("close failed: {e}");
+    match write.lock().await.write_frame(frame).await {
+        Ok(()) => {}
+        // The client is gone, and its departure has its own line.
+        Err(e) if is_peer_loss(&e) => {}
+        Err(e) => eprintln!("close failed: {e}"),
     }
 }
