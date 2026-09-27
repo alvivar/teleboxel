@@ -1,0 +1,1346 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light dark" />
+        <title>Teleboxel: how it works</title>
+        <style>
+            :root {
+                --bg: #fafaf8;
+                --text: #1c1e21;
+                --muted: #585d64;
+                --line: #e2e2dd;
+                --line-strong: #b4b8be;
+                --card: #ffffff;
+                --band: #f1f1ed;
+                --accent: #2b63d0;
+                --accent-soft: #e8effc;
+                --green: #1f7a39;
+                --orange: #b0540b;
+                --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #111315;
+                    --text: #e5e6e8;
+                    --muted: #a3a8af;
+                    --line: #2a2e33;
+                    --line-strong: #4d535b;
+                    --card: #181b1f;
+                    --band: #1e2227;
+                    --accent: #82aaff;
+                    --accent-soft: #1f2f4a;
+                    --green: #62cf80;
+                    --orange: #f2a45c;
+                }
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--text);
+                font: 17px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+                -webkit-text-size-adjust: 100%;
+            }
+            @media (max-width: 600px) {
+                body {
+                    font-size: 16px;
+                }
+            }
+
+            /* Layout: one column; on wide screens the contents stay on the left. */
+            .page {
+                max-width: 46rem;
+                margin: 0 auto;
+                padding: 3.5rem 1.25rem 5rem;
+            }
+            @media (min-width: 1180px) {
+                .page {
+                    max-width: none;
+                    display: grid;
+                    grid-template-columns: 13rem minmax(0, 46rem);
+                    grid-template-areas: "toc header" "toc main" "toc footer";
+                    column-gap: 4.5rem;
+                    justify-content: center;
+                }
+                header {
+                    grid-area: header;
+                }
+                main {
+                    grid-area: main;
+                }
+                footer {
+                    grid-area: footer;
+                }
+                nav.toc {
+                    grid-area: toc;
+                    position: sticky;
+                    top: 3.5rem;
+                    align-self: start;
+                    margin: 0;
+                    border: none;
+                    padding: 0;
+                }
+                nav.toc ol {
+                    display: block;
+                }
+            }
+
+            a {
+                color: var(--accent);
+                text-underline-offset: 0.15em;
+            }
+            a:focus-visible {
+                outline: 2px solid var(--accent);
+                outline-offset: 2px;
+                border-radius: 2px;
+            }
+            code {
+                font-family: var(--mono);
+                font-size: 0.86em;
+                background: var(--band);
+                border-radius: 4px;
+                padding: 0.08em 0.3em;
+                overflow-wrap: anywhere;
+            }
+
+            header .eyebrow {
+                margin: 0;
+                color: var(--muted);
+                font-size: 0.8rem;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+            h1 {
+                margin: 0.3rem 0 0.8rem;
+                font-size: clamp(2.2rem, 6vw, 3.2rem);
+                line-height: 1.1;
+                letter-spacing: -0.02em;
+            }
+            .lede {
+                font-size: 1.15rem;
+                margin: 0 0 1.2rem;
+            }
+            h2 {
+                margin: 4.5rem 0 0.6rem;
+                font-size: 1.6rem;
+                line-height: 1.25;
+                letter-spacing: -0.01em;
+                scroll-margin-top: 1.5rem;
+            }
+            h2 .num {
+                display: inline-grid;
+                place-items: center;
+                width: 1.7rem;
+                height: 1.7rem;
+                margin-right: 0.5rem;
+                border-radius: 50%;
+                background: var(--accent-soft);
+                color: var(--accent);
+                font-size: 0.95rem;
+                vertical-align: 0.2em;
+            }
+            h3 {
+                margin: 2.2rem 0 0.4rem;
+                font-size: 1.15rem;
+            }
+            p,
+            ul {
+                margin: 0 0 1rem;
+            }
+            li {
+                margin-bottom: 0.35rem;
+            }
+            .where {
+                font-size: 0.85rem;
+                color: var(--muted);
+                margin: 0 0 1.4rem;
+            }
+            .where::before {
+                content: "In the code  ";
+                font-weight: 600;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+                font-size: 0.72rem;
+                margin-right: 0.3rem;
+            }
+            .muted {
+                color: var(--muted);
+            }
+
+            nav.toc {
+                margin: 2rem 0 0;
+                padding: 1rem 1.2rem;
+                border: 1px solid var(--line);
+                border-radius: 12px;
+                font-size: 0.92rem;
+            }
+            nav.toc h2 {
+                margin: 0 0 0.5rem;
+                font-size: 0.75rem;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: var(--muted);
+            }
+            nav.toc ol {
+                margin: 0;
+                padding-left: 1.3rem;
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+                column-gap: 1.5rem;
+            }
+            nav.toc li {
+                margin: 0.2rem 0;
+            }
+            nav.toc a {
+                color: var(--text);
+                text-decoration: none;
+            }
+            nav.toc a:hover {
+                color: var(--accent);
+            }
+
+            .facts {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+                gap: 0.75rem;
+                margin: 1.8rem 0 0;
+                padding: 0;
+                list-style: none;
+            }
+            .facts li {
+                margin: 0;
+                padding: 0.8rem 1rem;
+                border: 1px solid var(--line);
+                border-radius: 10px;
+                background: var(--card);
+                font-size: 0.85rem;
+                color: var(--muted);
+                line-height: 1.35;
+            }
+            .facts b {
+                display: block;
+                font-size: 1.45rem;
+                color: var(--text);
+                letter-spacing: -0.01em;
+            }
+
+            figure {
+                margin: 1.8rem 0 2rem;
+            }
+            .diagram {
+                background: var(--card);
+                border: 1px solid var(--line);
+                border-radius: 14px;
+                padding: 1rem;
+            }
+            .diagram svg {
+                display: block;
+                width: 100%;
+                height: auto;
+            }
+            /* Wide diagrams keep their text legible on phones and scroll sideways. */
+            .scroll {
+                overflow-x: auto;
+            }
+            .scroll svg {
+                min-width: 620px;
+            }
+            .scroll-hint {
+                display: none;
+                font-size: 0.78rem;
+                color: var(--muted);
+                text-align: right;
+                margin: 0.4rem 0 0;
+            }
+            @media (max-width: 680px) {
+                .scroll-hint {
+                    display: block;
+                }
+            }
+            figcaption {
+                margin-top: 0.7rem;
+                font-size: 0.88rem;
+                color: var(--muted);
+            }
+
+            /* SVG diagram styles, shared by every figure. */
+            .d-t {
+                fill: var(--text);
+                font: 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            }
+            .d-b {
+                font-weight: 600;
+            }
+            .d-s {
+                fill: var(--muted);
+                font: 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            }
+            .d-m {
+                fill: var(--muted);
+                font: 12px var(--mono);
+            }
+            .d-box {
+                fill: var(--card);
+                stroke: var(--line-strong);
+                stroke-width: 1.2;
+            }
+            .d-q {
+                fill: var(--band);
+                stroke: var(--line-strong);
+                stroke-width: 1.2;
+            }
+            .d-accent {
+                fill: var(--accent-soft);
+                stroke: var(--accent);
+                stroke-width: 1.4;
+            }
+            .d-group {
+                fill: none;
+                stroke: var(--line-strong);
+                stroke-width: 1.2;
+                stroke-dasharray: 5 4;
+            }
+            .d-band {
+                fill: var(--band);
+            }
+            .d-line {
+                fill: none;
+                stroke: var(--muted);
+                stroke-width: 1.5;
+            }
+            .d-dash {
+                stroke-dasharray: 5 4;
+            }
+            .d-life {
+                stroke: var(--line-strong);
+                stroke-width: 1;
+                stroke-dasharray: 3 4;
+            }
+            .d-head {
+                fill: var(--muted);
+            }
+            .v-grid {
+                fill: none;
+                stroke: var(--line);
+                stroke-width: 1;
+            }
+            .v-known {
+                fill: var(--accent-soft);
+                stroke: var(--accent);
+                stroke-width: 1;
+            }
+            .v-pending {
+                fill: none;
+                stroke: var(--accent);
+                stroke-width: 1.4;
+                stroke-dasharray: 3 3;
+            }
+            .v-hatch {
+                stroke: var(--line-strong);
+                stroke-width: 2;
+            }
+            .v-h {
+                fill: none;
+                stroke: var(--green);
+                stroke-width: 2.5;
+            }
+            .v-h1 {
+                fill: none;
+                stroke: var(--orange);
+                stroke-width: 2.5;
+            }
+            .v-cross {
+                stroke: var(--orange);
+                stroke-width: 2;
+            }
+
+            .legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.35rem 1.2rem;
+                margin: 0.7rem 0 0;
+                padding: 0;
+                list-style: none;
+                font-size: 0.85rem;
+                color: var(--muted);
+            }
+            .legend li {
+                margin: 0;
+            }
+            .sw {
+                display: inline-block;
+                width: 0.95em;
+                height: 0.95em;
+                margin-right: 0.35em;
+                vertical-align: -0.12em;
+                border-radius: 2px;
+                border: 1.5px solid var(--accent);
+            }
+            .sw.known {
+                background: var(--accent-soft);
+            }
+            .sw.pending {
+                border-style: dashed;
+            }
+            .sw.exists {
+                border-color: var(--line-strong);
+                background: repeating-linear-gradient(45deg, var(--line-strong) 0 2px, transparent 2px 5px);
+            }
+            .sw.h {
+                border-color: var(--green);
+            }
+            .sw.h1 {
+                border-color: var(--orange);
+            }
+            .sw.cross {
+                border: none;
+                color: var(--orange);
+                font-weight: 700;
+                text-align: center;
+                line-height: 0.95em;
+            }
+
+            ol.steps {
+                list-style: none;
+                counter-reset: step;
+                padding: 0;
+                margin: 1.6rem 0;
+            }
+            ol.steps > li {
+                counter-increment: step;
+                position: relative;
+                margin: 0;
+                padding: 0.1rem 0 1.3rem 3rem;
+            }
+            ol.steps > li::before {
+                content: counter(step);
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 2rem;
+                height: 2rem;
+                display: grid;
+                place-items: center;
+                border-radius: 50%;
+                border: 1.5px solid var(--accent);
+                background: var(--accent-soft);
+                color: var(--accent);
+                font-weight: 600;
+                font-size: 0.9rem;
+            }
+            ol.steps > li::after {
+                content: "";
+                position: absolute;
+                left: 1rem;
+                top: 2.25rem;
+                bottom: 0.25rem;
+                border-left: 1.5px solid var(--line-strong);
+            }
+            ol.steps > li:last-child::after {
+                display: none;
+            }
+            ol.steps b {
+                display: block;
+            }
+            .loop {
+                font-size: 0.88rem;
+                color: var(--muted);
+                margin: -0.6rem 0 1.6rem 3rem;
+            }
+
+            .note {
+                margin: 1.5rem 0;
+                padding: 0.9rem 1.1rem;
+                border-left: 3px solid var(--accent);
+                border-radius: 0 10px 10px 0;
+                background: var(--accent-soft);
+            }
+            .note p:last-child {
+                margin-bottom: 0;
+            }
+
+            .bytes {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 5px;
+                margin: 0.5rem 0 1.2rem;
+                font-family: var(--mono);
+                font-size: 0.78rem;
+            }
+            .bytes span {
+                padding: 0.3rem 0.55rem;
+                border: 1px solid var(--line-strong);
+                border-radius: 6px;
+                background: var(--card);
+                white-space: nowrap;
+            }
+            .bytes .head {
+                border-color: var(--accent);
+                background: var(--accent-soft);
+                color: var(--accent);
+            }
+            .bytes .more {
+                border-style: dashed;
+                color: var(--muted);
+            }
+
+            .table-wrap {
+                overflow-x: auto;
+                margin: 0.5rem 0 1.4rem;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.88rem;
+            }
+            th,
+            td {
+                text-align: left;
+                vertical-align: top;
+                padding: 0.45rem 0.7rem 0.45rem 0;
+                border-bottom: 1px solid var(--line);
+            }
+            th {
+                font-weight: 600;
+                color: var(--muted);
+                font-size: 0.78rem;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+            }
+            td code {
+                white-space: nowrap;
+            }
+
+            .cards {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+                gap: 1rem;
+                margin: 1.2rem 0;
+            }
+            .card {
+                padding: 1.1rem 1.2rem 0.4rem;
+                border: 1px solid var(--line);
+                border-radius: 14px;
+                background: var(--card);
+            }
+            .card h3 {
+                margin: 0 0 0.2rem;
+            }
+            .card ul {
+                padding-left: 1.1rem;
+                font-size: 0.93rem;
+            }
+
+            .log {
+                margin: 0.5rem 0 1.2rem;
+                padding: 0.8rem 1rem;
+                border-radius: 10px;
+                background: var(--band);
+                font: 0.8rem/1.6 var(--mono);
+                overflow-x: auto;
+                white-space: pre;
+            }
+
+            footer {
+                margin-top: 4.5rem;
+                padding-top: 1.2rem;
+                border-top: 1px solid var(--line);
+                font-size: 0.88rem;
+                color: var(--muted);
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Arrowheads shared by every diagram. -->
+        <svg width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+            <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path class="d-head" d="M0 0 L10 5 L0 10 z" />
+                </marker>
+            </defs>
+        </svg>
+
+        <div class="page">
+            <header>
+                <p class="eyebrow">A guided tour of the code</p>
+                <h1>How Teleboxel works</h1>
+                <p class="lede">
+                    Teleboxel is a minimal, fast WebSocket server for a shared voxel world, written in Rust on Tokio.
+                    It owns a sparse, infinite voxel grid and a set of replicated entities. Clients edit the grid and
+                    move their entities; the server orders the changes, stores them and forwards them to the nearby
+                    clients.
+                </p>
+                <p class="muted">
+                    This page explains; it does not specify. The code is the specification, with every design reason
+                    as a comment next to the code it explains, and the wire contract for client authors is
+                    <a href="../PROTOCOL.md">PROTOCOL.md</a>. Each section below names the code it describes, so you
+                    can read the real thing next.
+                </p>
+                <ul class="facts" aria-label="Key numbers">
+                    <li><b>1</b>world task owns all state</li>
+                    <li><b>30 Hz</b>fixed tick</li>
+                    <li><b>16³</b>voxels per chunk</li>
+                    <li><b>32</b>slots in each client's outbound queue</li>
+                    <li><b>~50</b>clients, by design</li>
+                </ul>
+            </header>
+
+            <nav class="toc" aria-label="Contents">
+                <h2>Contents</h2>
+                <ol>
+                    <li><a href="#what">What it is, and isn't</a></li>
+                    <li><a href="#big-picture">The big picture</a></li>
+                    <li><a href="#connection">A connection's life</a></li>
+                    <li><a href="#tick">The tick</a></li>
+                    <li><a href="#world">A sparse, infinite world</a></li>
+                    <li><a href="#protocol">The wire, at a glance</a></li>
+                    <li><a href="#tools">Tools</a></li>
+                    <li><a href="#measured">Measured, and deferred</a></li>
+                </ol>
+            </nav>
+
+            <main>
+                <!-- 1 -->
+                <section aria-labelledby="what">
+                    <h2 id="what"><span class="num">1</span>What it is, and isn't</h2>
+                    <p class="where"><a href="../README.md">README.md</a> · <a href="../Cargo.toml">Cargo.toml</a></p>
+                    <p>
+                        The server is the one place where the world is true. Clients send what they want to happen; the
+                        server decides the order, applies it and tells everyone who can see it. It is deliberately
+                        small: four dependencies (<code>tokio</code>, <code>axum</code>, <code>fastwebsockets</code>,
+                        <code>bytes</code>) and four source files.
+                    </p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope="col">File</th>
+                                    <th scope="col">What lives there</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><a href="../src/protocol.rs"><code>src/protocol.rs</code></a></td>
+                                    <td>The wire format: decoding client messages, encoding server messages.</td>
+                                </tr>
+                                <tr>
+                                    <td><a href="../src/main.rs"><code>src/main.rs</code></a></td>
+                                    <td>HTTP/WebSocket accept and the connection lifecycle.</td>
+                                </tr>
+                                <tr>
+                                    <td><a href="../src/world.rs"><code>src/world.rs</code></a></td>
+                                    <td>World state, the tick and per-client sync.</td>
+                                </tr>
+                                <tr>
+                                    <td><a href="../src/bin/bot.rs"><code>src/bin/bot.rs</code></a></td>
+                                    <td>The load bot.</td>
+                                </tr>
+                                <tr>
+                                    <td><a href="../tools/client.html"><code>tools/client.html</code></a></td>
+                                    <td>A 2D debug client, one HTML file.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p>Just as important is what it leaves out:</p>
+                    <ul>
+                        <li>Auth, anti-cheat, rate limits. Clients are trusted.</li>
+                        <li>Persistence: the world lives in memory.</li>
+                        <li>Physics and gameplay rules, which belong in the client.</li>
+                        <li>More than ~50 concurrent clients.</li>
+                        <li>Transports other than WebSocket.</li>
+                    </ul>
+                </section>
+
+                <!-- 2 -->
+                <section aria-labelledby="big-picture">
+                    <h2 id="big-picture"><span class="num">2</span>The big picture</h2>
+                    <p class="where">
+                        <code>src/main.rs</code> · <code>main</code>, <code>ws_handler</code>,
+                        <code>handle_client</code>, <code>write_frames</code> — <code>src/world.rs</code> ·
+                        <code>Command</code>, <code>World::run</code>
+                    </p>
+                    <p>
+                        Everything runs on one Tokio runtime. There is exactly one task that owns the world, and per
+                        client, two small tasks that move bytes between the socket and the world. Connections and the world only talk
+                        through channels.
+                    </p>
+                    <figure>
+                        <div class="diagram scroll">
+                            <svg viewBox="0 0 800 385" role="img" aria-labelledby="fig1-title fig1-desc">
+                                <title id="fig1-title">Components and channels</title>
+                                <desc id="fig1-desc">
+                                    Clients connect over WebSocket. Each connection has a reader, which sends Command
+                                    messages to the world over one shared channel of 1024, and a writer, which
+                                    receives byte frames from the world over the client's own channel of 32. The
+                                    world also holds a oneshot per client to tell the connection to close.
+                                </desc>
+                                <!-- Clients -->
+                                <rect class="d-box" x="10" y="70" width="160" height="58" rx="10" />
+                                <text class="d-t d-b" x="26" y="95">Debug client</text>
+                                <text class="d-m" x="26" y="115">tools/client.html</text>
+                                <rect class="d-box" x="10" y="160" width="160" height="58" rx="10" />
+                                <text class="d-t d-b" x="26" y="185">Load bot</text>
+                                <text class="d-m" x="26" y="205">src/bin/bot.rs</text>
+                                <rect class="d-box" x="10" y="250" width="160" height="58" rx="10" />
+                                <text class="d-t d-b" x="26" y="275">Your client</text>
+                                <text class="d-m" x="26" y="295">PROTOCOL.md</text>
+                                <path class="d-line" d="M170 99 H184 M170 189 H184 M170 279 H184 M184 99 V279" />
+                                <path class="d-line" d="M188 189 H270" marker-start="url(#arrow)" marker-end="url(#arrow)" />
+                                <text class="d-s" x="229" y="180" text-anchor="middle">WebSocket</text>
+                                <text class="d-s" x="229" y="206" text-anchor="middle">binary</text>
+
+                                <!-- Connection -->
+                                <rect class="d-group" x="274" y="36" width="250" height="306" rx="14" />
+                                <text class="d-t d-b" x="290" y="60">One connection per client</text>
+                                <text class="d-m" x="290" y="78">src/main.rs</text>
+                                <rect class="d-box" x="294" y="96" width="210" height="76" rx="10" />
+                                <text class="d-t d-b" x="310" y="120">Reader</text>
+                                <text class="d-m" x="310" y="140">handle_client</text>
+                                <text class="d-s" x="310" y="159">decodes and validates</text>
+                                <rect class="d-box" x="294" y="238" width="210" height="76" rx="10" />
+                                <text class="d-t d-b" x="310" y="262">Writer</text>
+                                <text class="d-m" x="310" y="282">write_frames</text>
+                                <text class="d-s" x="310" y="301">its own task</text>
+                                <path class="d-line d-dash" d="M344 172 V236" marker-end="url(#arrow)" />
+                                <text class="d-s" x="354" y="200">pongs, close replies:</text>
+                                <text class="d-s" x="354" y="216">a shared write half</text>
+
+                                <!-- World -->
+                                <rect class="d-accent" x="624" y="90" width="166" height="200" rx="14" />
+                                <text class="d-t d-b" x="642" y="118">World</text>
+                                <text class="d-m" x="642" y="138">World::run</text>
+                                <text class="d-s" x="642" y="170">one task,</text>
+                                <text class="d-s" x="642" y="186">all the state</text>
+                                <text class="d-s" x="642" y="218">ticks at 30 Hz</text>
+                                <text class="d-m" x="642" y="270">src/world.rs</text>
+
+                                <path class="d-line" d="M504 132 H622" marker-end="url(#arrow)" />
+                                <text class="d-s" x="563" y="124" text-anchor="middle">Command</text>
+                                <text class="d-m" x="563" y="150" text-anchor="middle">mpsc 1024</text>
+                                <path class="d-line" d="M624 268 H506" marker-end="url(#arrow)" />
+                                <text class="d-s" x="563" y="260" text-anchor="middle">frames</text>
+                                <text class="d-m" x="563" y="286" text-anchor="middle">mpsc 32</text>
+                                <path class="d-line d-dash" d="M707 290 V366 H434 V344" marker-end="url(#arrow)" />
+                                <text class="d-s" x="570" y="360" text-anchor="middle">disconnect (oneshot, reason)</text>
+                            </svg>
+                        </div>
+                        <p class="scroll-hint">Scroll sideways →</p>
+                        <figcaption>
+                            One shared channel carries the commands of every connection to the world
+                            (<code>INBOUND_QUEUE</code> = 1024). Each client gets its own frame queue
+                            (<code>OUTBOUND_QUEUE</code> = 32) and a <code>oneshot</code> the world uses to end it.
+                        </figcaption>
+                    </figure>
+                    <ul>
+                        <li>
+                            <b>One owner, no locks on the world.</b> <code>main</code> moves the <code>World</code>
+                            into its own task. Connections never touch it; they send <code>Command::Join</code>,
+                            <code>Message</code> and <code>Leave</code>.
+                        </li>
+                        <li>
+                            <b>Validate once, at the edge.</b> The reader decodes every message with
+                            <code>protocol::decode_messages</code>; malformed input closes the connection. The world
+                            trusts the commands it receives.
+                        </li>
+                        <li>
+                            <b>Two halves, not one <code>select!</code>.</b> fastwebsockets' <code>read_frame</code> is
+                            not cancel-safe, so reading and writing are separate halves of the split socket. Pongs and
+                            close replies from the reader go through the same write half, shared behind a mutex.
+                        </li>
+                        <li>
+                            <b>The world speaks bytes, not WebSocket.</b> It builds each client's frame as
+                            <code>Bytes</code> and assumes an ordered, reliable stream. The writer just copies frames
+                            to the socket.
+                        </li>
+                    </ul>
+                </section>
+
+                <!-- 3 -->
+                <section aria-labelledby="connection">
+                    <h2 id="connection"><span class="num">3</span>A connection's life</h2>
+                    <p class="where">
+                        <code>src/main.rs</code> · <code>handle_client</code>, <code>read_hello</code>,
+                        <code>read_messages</code>, <code>close_on_error</code>, <code>End</code> —
+                        <code>src/world.rs</code> · <code>World::apply</code>
+                    </p>
+                    <p>
+                        From the upgrade to the last log line, one function, <code>handle_client</code>, runs the
+                        story. Read the diagram top to bottom.
+                    </p>
+                    <figure>
+                        <div class="diagram scroll">
+                            <svg viewBox="0 0 780 956" role="img" aria-labelledby="fig2-title fig2-desc">
+                                <title id="fig2-title">Sequence of a connection</title>
+                                <desc id="fig2-desc">
+                                    The client upgrades and sends HELLO. The connection decodes it, takes the next id,
+                                    sends Join to the world and spawns the writer. At its next tick the world sends
+                                    WELCOME through the writer. While connected, client messages become Message
+                                    commands and the world sends at most one sync frame per tick. Departure a: the
+                                    reader ends first; the connection sends Leave, the world removes the client at its
+                                    next tick and the others get ENTITY_REMOVE in that tick's frames; on malformed input
+                                    the connection closes with 1002. Departure b: a frame finds the client's queue full;
+                                    the world removes the client first, the others get ENTITY_REMOVE next tick, and it
+                                    signals the connection, whose later Leave is a no-op. Either way the connection logs
+                                    one line and stops the writer.
+                                </desc>
+                                <!-- Lanes -->
+                                <rect class="d-box" x="5" y="14" width="150" height="50" rx="10" />
+                                <text class="d-t d-b" x="80" y="36" text-anchor="middle">Client</text>
+                                <text class="d-s" x="80" y="54" text-anchor="middle">browser · bot · game</text>
+                                <rect class="d-box" x="245" y="14" width="150" height="50" rx="10" />
+                                <text class="d-t d-b" x="320" y="36" text-anchor="middle">Connection</text>
+                                <text class="d-m" x="320" y="54" text-anchor="middle">handle_client</text>
+                                <rect class="d-box" x="435" y="14" width="150" height="50" rx="10" />
+                                <text class="d-t d-b" x="510" y="36" text-anchor="middle">Writer</text>
+                                <text class="d-m" x="510" y="54" text-anchor="middle">write_frames</text>
+                                <rect class="d-accent" x="605" y="14" width="150" height="50" rx="10" />
+                                <text class="d-t d-b" x="680" y="36" text-anchor="middle">World</text>
+                                <text class="d-m" x="680" y="54" text-anchor="middle">World::run</text>
+                                <path class="d-life" d="M80 64 V946 M320 64 V946 M510 64 V946 M680 64 V946" />
+
+                                <!-- Join -->
+                                <path class="d-line" d="M80 100 H316" marker-end="url(#arrow)" />
+                                <text class="d-s" x="200" y="93" text-anchor="middle">WebSocket upgrade (ws_handler)</text>
+                                <path class="d-line" d="M80 140 H316" marker-end="url(#arrow)" />
+                                <text class="d-s" x="200" y="133" text-anchor="middle">HELLO: version, view_h, view_v</text>
+                                <rect class="d-q" x="235" y="158" width="170" height="30" rx="8" />
+                                <text class="d-m" x="320" y="178" text-anchor="middle">decode_hello · next id</text>
+                                <path class="d-line" d="M320 220 H676" marker-end="url(#arrow)" />
+                                <text class="d-s" x="500" y="213" text-anchor="middle">Join { id, tx, disconnect, view }</text>
+                                <path class="d-line" d="M320 256 H506" marker-end="url(#arrow)" />
+                                <text class="d-s" x="415" y="249" text-anchor="middle">spawn</text>
+                                <rect class="d-q" x="625" y="276" width="110" height="28" rx="8" />
+                                <text class="d-s" x="680" y="295" text-anchor="middle">next tick</text>
+                                <path class="d-line" d="M680 330 H514" marker-end="url(#arrow)" />
+                                <text class="d-s" x="597" y="323" text-anchor="middle">[tick] WELCOME</text>
+                                <path class="d-line" d="M510 364 H84" marker-end="url(#arrow)" />
+                                <text class="d-s" x="300" y="357" text-anchor="middle">WELCOME: entity id, 30 Hz</text>
+
+                                <!-- Connected -->
+                                <rect class="d-band" x="10" y="384" width="760" height="24" rx="6" />
+                                <text class="d-s d-b" x="22" y="400">while connected</text>
+                                <path class="d-line" d="M80 436 H316" marker-end="url(#arrow)" />
+                                <text class="d-s" x="200" y="429" text-anchor="middle">ENTITY_STATE · VOXEL_EDITS</text>
+                                <path class="d-line" d="M320 470 H676" marker-end="url(#arrow)" />
+                                <text class="d-s" x="500" y="463" text-anchor="middle">Message { id, message }, one per message</text>
+                                <path class="d-line" d="M680 504 H514" marker-end="url(#arrow)" />
+                                <text class="d-s" x="597" y="497" text-anchor="middle">one sync frame per tick, if any</text>
+                                <path class="d-line" d="M510 538 H84" marker-end="url(#arrow)" />
+                                <text class="d-s" x="300" y="531" text-anchor="middle">frame</text>
+
+                                <!-- Departure: the reader ends first -->
+                                <rect class="d-band" x="10" y="558" width="760" height="24" rx="6" />
+                                <text class="d-s d-b" x="22" y="574">departure a: the reader ends first</text>
+                                <path class="d-line" d="M80 610 H316" marker-end="url(#arrow)" />
+                                <text class="d-s" x="200" y="603" text-anchor="middle">close · EOF · malformed input</text>
+                                <path class="d-line" d="M320 644 H676" marker-end="url(#arrow)" />
+                                <text class="d-s" x="500" y="637" text-anchor="middle">Leave { id }</text>
+                                <rect class="d-q" x="585" y="660" width="190" height="42" rx="8" />
+                                <text class="d-s" x="680" y="677" text-anchor="middle">next tick: remove,</text>
+                                <text class="d-s" x="680" y="693" text-anchor="middle">others get ENTITY_REMOVE</text>
+                                <path class="d-line" d="M320 730 H84" marker-end="url(#arrow)" />
+                                <text class="d-s" x="200" y="723" text-anchor="middle">close 1002 + reason, if malformed</text>
+
+                                <!-- Departure: the world ends it first -->
+                                <rect class="d-band" x="10" y="752" width="760" height="24" rx="6" />
+                                <text class="d-s d-b" x="22" y="768">departure b: the world ends it first</text>
+                                <rect class="d-q" x="578" y="792" width="200" height="42" rx="8" />
+                                <text class="d-s" x="678" y="809" text-anchor="middle">queue full: remove,</text>
+                                <text class="d-s" x="678" y="825" text-anchor="middle">ENTITY_REMOVE next tick</text>
+                                <path class="d-line d-dash" d="M680 860 H324" marker-end="url(#arrow)" />
+                                <text class="d-s" x="500" y="853" text-anchor="middle">disconnect: "outbound queue full"</text>
+                                <path class="d-line" d="M320 894 H676" marker-end="url(#arrow)" />
+                                <text class="d-s" x="500" y="887" text-anchor="middle">Leave { id }: already removed, a no-op</text>
+
+                                <!-- Both -->
+                                <rect class="d-q" x="205" y="914" width="230" height="30" rx="8" />
+                                <text class="d-s" x="320" y="934" text-anchor="middle">either way: log one line, stop writer</text>
+                            </svg>
+                        </div>
+                        <p class="scroll-hint">Scroll sideways →</p>
+                        <figcaption>
+                            The connection does not wait for a Join acknowledgement: it picks the id itself and starts
+                            reading at once (only the bounded command channel can make it wait for room). It never
+                            encodes server messages: even <code>WELCOME</code> comes from the world, in its own frame,
+                            so every frame, the first included, carries a real tick; the next sync frame can carry the
+                            same tick. A client may send right after <code>HELLO</code>.
+                        </figcaption>
+                    </figure>
+
+                    <h3>Joining</h3>
+                    <ul>
+                        <li>
+                            <code>read_hello</code> requires <code>HELLO</code> as the whole first message: version 1,
+                            <code>view_h</code> ≤ 16, <code>view_v</code> ≤ 8 (<code>MAX_VIEW_H</code>,
+                            <code>MAX_VIEW_V</code>: they bound each client's tick cost).
+                        </li>
+                        <li>
+                            The id comes from a global counter, <code>NEXT_ID</code>, and is never reused, not even once
+                            exhausted: clients and the world key entities by id. Exhaustion closes with
+                            <code>1011 entity ids exhausted</code> instead of <code>WELCOME</code>.
+                        </li>
+                        <li>
+                            <code>Command::Join</code> hands the world the client's frame queue <code>tx</code> and the
+                            <code>disconnect</code> sender. The server prints
+                            <code>client 3 connected (view 8/4)</code>.
+                        </li>
+                    </ul>
+
+                    <h3>Leaving, with a reason</h3>
+                    <p>
+                        <code>handle_client</code> waits in a <code>biased</code> <code>select!</code> on two things:
+                        the reader finishing, and the <code>disconnected</code> oneshot resolving. The reader goes
+                        first, so its reason wins when both are ready. The world's signal is needed because a client
+                        that stops reading blocks the writer mid-write, and with it the pongs and the close; only the
+                        world can notice (a new frame finds the queue full) and end the connection.
+                    </p>
+                    <p>
+                        Then it sends <code>Leave</code>, which is a no-op if the world already removed the client,
+                        attempts a <code>1002</code> close if the input was malformed (raced, again
+                        <code>biased</code>, against the world forgetting the client), logs exactly one line and
+                        aborts the writer. Dropping both halves closes the socket.
+                    </p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th scope="col">How it ended (<code>End</code>)</th>
+                                    <th scope="col">The one line on stdout</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>The client closed</td>
+                                    <td><code>client 3 disconnected: closed by client</code></td>
+                                </tr>
+                                <tr>
+                                    <td>EOF, reset, aborted, broken pipe</td>
+                                    <td><code>client 7 disconnected: connection lost (Unexpected EOF)</code></td>
+                                </tr>
+                                <tr>
+                                    <td>Malformed input (closed with 1002)</td>
+                                    <td><code>client 9 disconnected: protocol error "truncated message"</code></td>
+                                </tr>
+                                <tr>
+                                    <td>The world gave up on it</td>
+                                    <td><code>client 12 disconnected: outbound queue full</code></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="muted">
+                        Before its <code>HELLO</code> is accepted a client has no id and is logged as
+                        <code>new connection</code>. Leaving, however abruptly, is the client's doing and goes to
+                        stdout; stderr is only for failures on the server's side (upgrade failed, close failed, ids
+                        exhausted, anything unexpected).
+                    </p>
+                </section>
+
+                <!-- 4 -->
+                <section aria-labelledby="tick">
+                    <h2 id="tick"><span class="num">4</span>The tick</h2>
+                    <p class="where">
+                        <code>src/world.rs</code> · <code>World::run</code>, <code>step</code>, <code>apply</code>,
+                        <code>send_frames</code>
+                    </p>
+                    <p>
+                        The world does nothing between ticks. Thirty times a second it runs one <code>step</code>:
+                    </p>
+                    <ol class="steps">
+                        <li>
+                            <b>Wait for the ticker</b>
+                            An interval of 1/30 s. A late tick is skipped, not made up with a burst
+                            (<code>MissedTickBehavior::Skip</code>).
+                        </li>
+                        <li>
+                            <b>Drain the commands</b>
+                            Everything queued since the last tick, applied in order. <code>Join</code> sends
+                            <code>WELCOME</code>, in its own frame; <code>Leave</code> removes the client; <code>ENTITY_STATE</code>
+                            stores the entity and marks it changed; <code>VOXEL_EDITS</code> writes voxels into their
+                            chunks, creating a chunk on its first edit, and records the tick's edits per chunk.
+                            Commands are only read here: nothing is sent between ticks, so reading them earlier would
+                            only add wakeups.
+                        </li>
+                        <li>
+                            <b>Build one sync frame per client</b>
+                            Each entity's <code>ENTITY_STATE</code> is encoded once, for every viewer. Then per client
+                            with an entity: <code>u32 tick</code>, then <code>sync_chunks</code>, then
+                            <code>sync_entities</code>. No messages, no frame.
+                        </li>
+                        <li>
+                            <b>Hand it over with <code>try_send</code></b>
+                            Never awaiting a client. A full queue marks the client for disconnection with the reason
+                            <code>outbound queue full</code>; a closed one means the connection already ended.
+                        </li>
+                        <li>
+                            <b>Clear the tick's state</b>
+                            Per-chunk edits, changed entities, destroyed entities.
+                        </li>
+                        <li>
+                            <b>Remove disconnected clients</b>
+                            After the clear, so the others get <code>ENTITY_REMOVE</code> next tick. The reason, if
+                            any, goes to the connection through its oneshot.
+                        </li>
+                        <li>
+                            <b>Advance the tick</b>
+                            <code>tick.wrapping_add(1)</code>: a <code>u32</code> that wraps after ~4.5 years at 30 Hz.
+                        </li>
+                    </ol>
+                    <p class="loop">↻ back to 1</p>
+
+                    <div class="note">
+                        <p>
+                            <b>Reliable, or disconnected.</b> The world never drops a frame: when a new frame finds a
+                            client's 32-slot queue full (about 1 s of frames at 30 Hz), the client is disconnected
+                            instead. So the world only has to remember <em>what</em> each client has, never which
+                            version. Dropping frames, as a transport over unreliable datagrams would, needs versioned
+                            state per client, and is deferred.
+                        </p>
+                    </div>
+                    <p>Every 5 s the world prints what the tick cost. Only <code>step</code> is timed, not the wait:</p>
+                    <pre class="log">tick avg … max … | out … KiB/s | clients … entities … chunks …</pre>
+                </section>
+
+                <!-- 5 -->
+                <section aria-labelledby="world">
+                    <h2 id="world"><span class="num">5</span>A sparse, infinite world</h2>
+                    <p class="where">
+                        <code>src/world.rs</code> · <code>Chunk</code>, <code>Client</code>, <code>sync_chunks</code>,
+                        <code>sync_entities</code>, <code>in_box</code>
+                    </p>
+                    <p>
+                        The grid is a <code>HashMap</code> from chunk coordinates to chunks of 16×16×16 voxels, each
+                        voxel a <code>u16</code> block id (0 is air). A chunk exists from its first edit on and is
+                        never removed; a chunk that does not exist is all air. Voxel coordinates are
+                        <code>i32</code>, so the world is as good as infinite.
+                    </p>
+                    <ul>
+                        <li>
+                            A voxel's chunk is <code>v &gt;&gt; 4</code> per axis; its index inside the chunk is
+                            <code>x | z &lt;&lt; 4 | y &lt;&lt; 8</code> (local coordinates), so each horizontal layer
+                            is contiguous.
+                        </li>
+                        <li>
+                            Entity positions are 24.8 fixed point (1/256 voxel), so an entity's chunk is
+                            <code>pos &gt;&gt; 12</code>. One entity per client; its id is the client's id.
+                        </li>
+                    </ul>
+
+                    <h3>What each client sees</h3>
+                    <p>
+                        A client's view is a box of chunks around the chunk <b>C</b> that holds its entity:
+                        <code>H</code> chunks each way horizontally, <code>V</code> vertically. What it already has
+                        stays until it is beyond <code>H + 1</code> / <code>V + 1</code>. Without that hysteresis ring,
+                        moving back and forth across a border would unload and resend a whole plane of chunks every
+                        time.
+                    </p>
+                    <figure>
+                        <div class="diagram" style="max-width: 27rem; margin: 0 auto">
+                            <svg viewBox="0 0 372 372" role="img" aria-labelledby="fig3-title fig3-desc">
+                                <title id="fig3-title">The view box and the hysteresis ring, seen from above</title>
+                                <desc id="fig3-desc">
+                                    A 9 by 9 grid of chunks with H equal to 2. The entity's chunk C is in the middle.
+                                    A green box marks the view, 5 by 5 chunks; an orange box marks H plus 1, 7 by 7.
+                                    Known chunks are tinted. Five pending chunks inside the view are numbered 1 to 5 in
+                                    sending order, nearest first. A known chunk in the ring is kept. Existing chunks
+                                    outside the view are not sent. A chunk beyond H plus 1 is crossed out: unloaded.
+                                </desc>
+                                <defs>
+                                    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                                        <line class="v-hatch" x1="0" y1="0" x2="0" y2="6" />
+                                    </pattern>
+                                </defs>
+                                <!-- known -->
+                                <rect class="v-known" x="168" y="168" width="36" height="36" />
+                                <rect class="v-known" x="132" y="168" width="36" height="36" />
+                                <rect class="v-known" x="204" y="168" width="36" height="36" />
+                                <rect class="v-known" x="168" y="132" width="36" height="36" />
+                                <rect class="v-known" x="168" y="204" width="36" height="36" />
+                                <rect class="v-known" x="132" y="132" width="36" height="36" />
+                                <rect class="v-known" x="204" y="204" width="36" height="36" />
+                                <rect class="v-known" x="60" y="168" width="36" height="36" />
+                                <text class="d-s" x="78" y="191" text-anchor="middle">kept</text>
+                                <!-- exists, not in view -->
+                                <rect x="276" y="276" width="36" height="36" fill="url(#hatch)" />
+                                <rect x="312" y="204" width="36" height="36" fill="url(#hatch)" />
+                                <!-- pending, nearest first -->
+                                <rect class="v-pending" x="242" y="170" width="32" height="32" />
+                                <text class="d-t d-b" x="258" y="191" text-anchor="middle">1</text>
+                                <rect class="v-pending" x="170" y="242" width="32" height="32" />
+                                <text class="d-t d-b" x="186" y="263" text-anchor="middle">2</text>
+                                <rect class="v-pending" x="206" y="98" width="32" height="32" />
+                                <text class="d-t d-b" x="222" y="119" text-anchor="middle">3</text>
+                                <rect class="v-pending" x="98" y="206" width="32" height="32" />
+                                <text class="d-t d-b" x="114" y="227" text-anchor="middle">4</text>
+                                <rect class="v-pending" x="242" y="242" width="32" height="32" />
+                                <text class="d-t d-b" x="258" y="263" text-anchor="middle">5</text>
+                                <!-- unloaded -->
+                                <path class="v-cross" d="M32 140 L52 160 M52 140 L32 160" />
+                                <!-- grid -->
+                                <path
+                                    class="v-grid"
+                                    d="M24 24 V348 M60 24 V348 M96 24 V348 M132 24 V348 M168 24 V348 M204 24 V348 M240 24 V348 M276 24 V348 M312 24 V348 M348 24 V348 M24 24 H348 M24 60 H348 M24 96 H348 M24 132 H348 M24 168 H348 M24 204 H348 M24 240 H348 M24 276 H348 M24 312 H348 M24 348 H348"
+                                />
+                                <!-- boxes -->
+                                <rect class="v-h1" x="60" y="60" width="252" height="252" />
+                                <rect class="v-h" x="96" y="96" width="180" height="180" />
+                                <text class="d-s d-b" x="65" y="75" style="fill: var(--orange)">H+1</text>
+                                <text class="d-s d-b" x="101" y="111" style="fill: var(--green)">H</text>
+                                <!-- the entity -->
+                                <circle cx="186" cy="186" r="6" style="fill: var(--text)" />
+                                <text class="d-s d-b" x="194" y="182">C</text>
+                            </svg>
+                        </div>
+                        <ul class="legend" aria-hidden="true">
+                            <li><span class="sw h"></span>view, H = 2</li>
+                            <li><span class="sw h1"></span>hysteresis, H + 1</li>
+                            <li><span class="sw known"></span>the client has it</li>
+                            <li><span class="sw pending"></span>pending, sent nearest first</li>
+                            <li><span class="sw exists"></span>exists, outside the view: not sent</li>
+                            <li><span class="sw cross">×</span>beyond H + 1: <code>CHUNK_UNLOAD</code></li>
+                        </ul>
+                        <figcaption>
+                            Top-down (X right, Z down, like the debug client); <code>V</code> works the same along Y.
+                            The entity just moved one chunk to +X: the chunk that was at the left edge of its view is
+                            now in the ring and kept, and one that was in the old ring is unloaded.
+                        </figcaption>
+                    </figure>
+
+                    <h3>Chunks: <code>sync_chunks</code></h3>
+                    <p>
+                        Its work is bounded by what changed, not by the view size. Each tick it does up to three things:
+                    </p>
+                    <ol class="steps">
+                        <li>
+                            <b>Rescan, only when C changes</b>
+                            Scanning the view every tick is up to 33 × 33 × 17 lookups per client, over the 1 ms tick
+                            target at 50 clients. So only when the entity crosses a chunk boundary: known chunks beyond
+                            <code>H + 1</code> / <code>V + 1</code> get <code>CHUNK_UNLOAD</code>, and every existing
+                            chunk in view that the client lacks goes into <code>pending</code>, sorted so the nearest
+                            comes out first.
+                        </li>
+                        <li>
+                            <b>Forward this tick's edits</b>
+                            A chunk the client has gets them wherever it is, even in the ring: a known chunk is not
+                            sent again just for re-entering the view, so without its edits it would come back stale.
+                            See the diagram below.
+                        </li>
+                        <li>
+                            <b>Fill the view, gently</b>
+                            Pending chunks go out as <code>CHUNK</code>, nearest first, at most 8 per tick
+                            (<code>MAX_SNAPSHOTS_PER_TICK</code>: 64 KiB per frame, about 2 MiB/s), and only while the
+                            client's queue is empty, so a slow link does not fill up with snapshots while entity
+                            updates wait behind them.
+                        </li>
+                    </ol>
+                    <figure>
+                        <div class="diagram scroll">
+                            <svg viewBox="0 0 680 252" role="img" aria-labelledby="fig4-title fig4-desc">
+                                <title id="fig4-title">What an edited chunk sends to one client</title>
+                                <desc id="fig4-desc">
+                                    If the client has the chunk: more than 2048 edits this tick sends the whole CHUNK,
+                                    otherwise CHUNK_EDITS. If it does not have it: a chunk in view is sent as CHUNK and
+                                    becomes known; otherwise nothing is sent.
+                                </desc>
+                                <rect class="d-box" x="10" y="105" width="150" height="40" rx="20" />
+                                <text class="d-t" x="85" y="130" text-anchor="middle">edited this tick</text>
+                                <rect class="d-q" x="200" y="105" width="130" height="40" rx="8" />
+                                <text class="d-t" x="265" y="130" text-anchor="middle">client has it?</text>
+                                <rect class="d-q" x="380" y="45" width="130" height="40" rx="8" />
+                                <text class="d-t" x="445" y="70" text-anchor="middle">&gt; 2048 edits?</text>
+                                <rect class="d-q" x="380" y="165" width="130" height="40" rx="8" />
+                                <text class="d-t" x="445" y="190" text-anchor="middle">in view (H, V)?</text>
+                                <rect class="d-accent" x="560" y="10" width="110" height="40" rx="8" />
+                                <text class="d-m" x="615" y="35" text-anchor="middle" style="fill: var(--text)">CHUNK</text>
+                                <rect class="d-accent" x="560" y="70" width="110" height="40" rx="8" />
+                                <text class="d-m" x="615" y="95" text-anchor="middle" style="fill: var(--text)">CHUNK_EDITS</text>
+                                <rect class="d-accent" x="560" y="150" width="110" height="40" rx="8" />
+                                <text class="d-m" x="615" y="175" text-anchor="middle" style="fill: var(--text)">CHUNK</text>
+                                <rect class="d-box" x="560" y="210" width="110" height="40" rx="8" />
+                                <text class="d-s" x="615" y="235" text-anchor="middle">nothing</text>
+                                <path class="d-line" d="M160 125 H198" marker-end="url(#arrow)" />
+                                <path class="d-line" d="M330 125 H355 V65 H378" marker-end="url(#arrow)" />
+                                <text class="d-s" x="358" y="60">yes</text>
+                                <path class="d-line" d="M330 125 H355 V185 H378" marker-end="url(#arrow)" />
+                                <text class="d-s" x="360" y="180">no</text>
+                                <path class="d-line" d="M510 65 H535 V30 H558" marker-end="url(#arrow)" />
+                                <text class="d-s" x="541" y="24">yes</text>
+                                <path class="d-line" d="M510 65 H535 V90 H558" marker-end="url(#arrow)" />
+                                <text class="d-s" x="541" y="84">no</text>
+                                <path class="d-line" d="M510 185 H535 V170 H558" marker-end="url(#arrow)" />
+                                <text class="d-s" x="541" y="164">yes</text>
+                                <path class="d-line" d="M510 185 H535 V230 H558" marker-end="url(#arrow)" />
+                                <text class="d-s" x="541" y="224">no</text>
+                            </svg>
+                        </div>
+                        <p class="scroll-hint">Scroll sideways →</p>
+                        <figcaption>
+                            Above <code>MAX_CHUNK_EDITS</code> = 2048 a snapshot is sent instead of the edits: the
+                            <code>count</code> stays inside a <code>u16</code>, and a delta stays roughly
+                            snapshot-sized (2048 × 4 B = 8 KiB). A pending chunk that an edit already sent is skipped
+                            by the view fill.
+                        </figcaption>
+                    </figure>
+
+                    <h3>Entities: <code>sync_entities</code></h3>
+                    <p>
+                        Checked every tick, because entities move on their own, with the same box and ring as the
+                        chunks. An entity entering the view (<code>H</code>, <code>V</code>) arrives as
+                        <code>ENTITY_STATE</code>; a known one is resent whenever it changed; one beyond
+                        <code>H + 1</code> / <code>V + 1</code>, or whose client left, gets
+                        <code>ENTITY_REMOVE</code>. A client never receives its own entity, and has no view at all
+                        until its first <code>ENTITY_STATE</code>.
+                    </p>
+                </section>
+
+                <!-- 6 -->
+                <section aria-labelledby="protocol">
+                    <h2 id="protocol"><span class="num">6</span>The wire, at a glance</h2>
+                    <p class="where"><code>src/protocol.rs</code> — the full contract: <a href="../PROTOCOL.md">PROTOCOL.md</a></p>
+                    <p>
+                        Binary WebSocket messages. Integers are little-endian and fixed width, with no padding. Each
+                        message starts with a <code>u8</code> type, and there is no per-message length: the size follows from the contents.
+                        So malformed input is an error, never skipped or guessed; the connection is closed with the
+                        error as the reason.
+                    </p>
+                    <p class="muted" style="margin-bottom: 0.2rem">A client message: messages, no header.</p>
+                    <div class="bytes" aria-label="Client message layout">
+                        <span>0x02 ENTITY_STATE …</span><span>0x03 VOXEL_EDITS …</span><span class="more">…</span>
+                    </div>
+                    <p class="muted" style="margin-bottom: 0.2rem">
+                        A server frame: the tick, then one or more messages; chunks come before entities, the order
+                        <code>send_frames</code> builds them in.
+                    </p>
+                    <div class="bytes" aria-label="Server frame layout">
+                        <span class="head">u32 tick</span><span>0x85 CHUNK_EDITS …</span><span>0x84 CHUNK …</span
+                        ><span>0x82 ENTITY_STATE …</span><span class="more">…</span>
+                    </div>
+                    <p>
+                        Clients send <code>HELLO</code>, <code>ENTITY_STATE</code> and <code>VOXEL_EDITS</code>; the
+                        server sends <code>WELCOME</code>, <code>ENTITY_STATE</code>, <code>ENTITY_REMOVE</code>,
+                        <code>CHUNK</code>, <code>CHUNK_EDITS</code> and <code>CHUNK_UNLOAD</code>.
+                    </p>
+                    <ul>
+                        <li>
+                            The tick lets clients interpolate entities by server time rather than by arrival time,
+                            which carries network jitter.
+                        </li>
+                        <li>
+                            Close codes: <code>1002</code> with a reason for malformed input (for example
+                            <code>truncated message</code>, <code>view_h too large</code>), <code>1011</code> when ids
+                            run out.
+                        </li>
+                        <li>
+                            Byte layouts, the full lifecycle, every close reason and the limits are in
+                            <a href="../PROTOCOL.md">PROTOCOL.md</a>; the tests in <code>src/protocol.rs</code> pin the
+                            encoders' exact bytes.
+                        </li>
+                    </ul>
+                </section>
+
+                <!-- 7 -->
+                <section aria-labelledby="tools">
+                    <h2 id="tools"><span class="num">7</span>Tools</h2>
+                    <p class="where"><code>src/bin/bot.rs</code> · <code>run_bot</code> — <code>tools/client.html</code></p>
+                    <p>Two clients ship with the server, for two different questions.</p>
+                    <div class="cards">
+                        <article class="card">
+                            <h3>The load bot</h3>
+                            <p class="muted">“How long does a tick take at 50 clients?”</p>
+                            <ul>
+                                <li>
+                                    N well-behaved clients. Each walks a circle of radius 24 voxels at 6 voxels/s,
+                                    around grid points 48 apart, so it crosses chunk borders and sees its neighbors.
+                                </li>
+                                <li>
+                                    It sends its entity every server tick, edits the voxel under it at the given rate
+                                    and reads every frame.
+                                </li>
+                                <li>
+                                    Every 5 s it prints what the bots received, to cross-check the server's
+                                    <code>out</code> figure.
+                                </li>
+                                <li>
+                                    <code>bot [clients=50] [addr=127.0.0.1:3000] [seconds=30] [view_h=8] [view_v=4]
+                                    [edits_per_sec=2]</code>
+                                </li>
+                            </ul>
+                        </article>
+                        <article class="card">
+                            <h3>The debug client</h3>
+                            <p class="muted">“What exactly did the server send me?”</p>
+                            <ul>
+                                <li>
+                                    One HTML file, opened from disk. A top-down view of one horizontal layer, with the
+                                    view (H) and hysteresis (H+1) boxes drawn from the position as sent.
+                                </li>
+                                <li>
+                                    It draws only what the server sent: its own edits are sent, never applied locally,
+                                    and appear when their echo arrives.
+                                </li>
+                                <li>
+                                    WASD moves, Q/E changes the layer, drag paints, right drag erases, the wheel zooms
+                                    (2–32 px per voxel), 1–9 or the palette pick a color.
+                                </li>
+                                <li>
+                                    Edits go out as one <code>VOXEL_EDITS</code> per tick, and its entity only when it
+                                    changed.
+                                </li>
+                            </ul>
+                        </article>
+                    </div>
+                    <pre class="log">cargo run --release                                     # server on :3000, stats every 5 s
+cargo run --release --bin bot -- 50 127.0.0.1:3000 60   # 50 bots for 60 s</pre>
+                </section>
+
+                <!-- 8 -->
+                <section aria-labelledby="measured">
+                    <h2 id="measured"><span class="num">8</span>Measured, and deferred</h2>
+                    <p class="where"><a href="../README.md">README.md</a> · Measured, Deferred</p>
+                    <p>
+                        With 50 bots on the same machine as the server (i7-13700H, Windows 11, loopback), a tick takes
+                        <b>0.5–0.8 ms</b> of work on average, within the 1 ms target. The worst ticks, 2–4 ms steady
+                        and ~10 ms while all 50 clients join, are accepted: the tick period is 33 ms.
+                    </p>
+                    <div class="cards">
+                        <article class="card">
+                            <h3>Optimizations</h3>
+                            <p class="muted">Measure first; chunk traffic dominates.</p>
+                            <ul>
+                                <li>compact chunk encodings (uniform, RLE, palette)</li>
+                                <li>snapshot encodings shared between clients</li>
+                                <li>zero-allocation frame building</li>
+                            </ul>
+                        </article>
+                        <article class="card">
+                            <h3>Features</h3>
+                            <ul>
+                                <li>drop-tolerant sync (versioned state), for UDP/WebTransport</li>
+                                <li><code>PING</code>/<code>PONG</code> for client RTT</li>
+                                <li>several entities per client</li>
+                                <li>prediction and reconciliation</li>
+                                <li>validation, rate limits, auth</li>
+                                <li>persistence</li>
+                            </ul>
+                        </article>
+                    </div>
+                </section>
+            </main>
+
+            <footer>
+                <p>
+                    Where to go next: <a href="../src/world.rs">src/world.rs</a> for the tick and sync,
+                    <a href="../src/main.rs">src/main.rs</a> for connections, and
+                    <a href="../PROTOCOL.md">PROTOCOL.md</a> to write a client. If this page and the code disagree, the
+                    code is right.
+                </p>
+            </footer>
+        </div>
+    </body>
+</html>

@@ -38,6 +38,8 @@ press Connect. It draws only what the server sent.
 - `src/world.rs`: world state, the tick and per-client sync.
 - `src/bin/bot.rs`: the load bot.
 
+A visual tour of how they fit together: [docs/overview.html](docs/overview.html).
+
 ## Measured
 
 With 50 bots on the same machine as the server (i7-13700H, Windows 11,
